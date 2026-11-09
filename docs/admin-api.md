@@ -47,6 +47,11 @@ config body without applying it. `POST /api/v1/config/diff` returns a validated
 diff for a raw TOML candidate, and `POST /api/v1/config/apply` applies a raw
 TOML candidate through the lifecycle/runtime command boundary. `GET /api/v1/health`
 returns a minimal operational health response without secrets or upstream URLs.
+Validate, diff, and apply enforce the same source checks used at startup,
+including the required `schema_version` and rejection of unknown fields. A
+rejected apply leaves the current revision and running configuration unchanged.
+Generated revision identifiers are opaque: repeated changes use bounded names,
+and changes after rollback receive a new identifier instead of replacing history.
 Authenticated `GET /api/v1/upstream-health` returns the active health generation
 and ordered per-upstream availability without endpoint URLs or probe details.
 `GET /api/v1/certificates`, `GET /api/v1/certificates/{id}`,
@@ -70,7 +75,9 @@ returns frame hashes, filesystem paths, raw config, payload bodies, or secrets.
 `POST /api/v1/support-bundles` is an authenticated, CSRF-protected operational
 mutation. It creates a fixed allowlist archive from bootstrap-wired paths only:
 the request does not accept caller-selected paths, artifacts, bounds, service
-actions, or output locations. Its receipt contains only `archive_id`,
+actions, or output locations; an authenticated request with a nonempty body is
+rejected. A later successful collection atomically replaces the previous
+`latest.tar`; a failed collection preserves it. Its receipt contains only `archive_id`,
 `digest_sha256`, collected/omitted logical artifact names, and `total_bytes`.
 Archive paths, private keys, secrets, request/response bodies, headers,
 cookies, and queries are never returned. Collection failures use the stable
@@ -347,7 +354,8 @@ New clients use `upstreams[]`. Each `id` is a stable identity and must be unique
 within the proxy host. The `health_check` object is optional; absence disables
 active probes. `upstream_url` remains in responses and is accepted as a legacy
 single-upstream input, but must not be used together with assumptions that only
-one target exists.
+one target exists. The top-level `enabled` controls the proxy host independently
+of the `enabled` flags in health, retry, and passive-health policies.
 
 ```json
 {

@@ -150,6 +150,10 @@ const fallbackState = {
   },
 };
 
+function setCsrfToken(token) {
+  state.csrfToken = token;
+}
+
 const state = {
   mode: "connecting",
   authenticated: false,
@@ -456,6 +460,11 @@ async function refreshProtected() {
       api.errorLogs(),
     ]);
 
+    if (!state.csrfToken) {
+      state.authenticated = false;
+      clearProtectedState();
+      return;
+    }
     state.authenticated = true;
     state.setupRequired = false;
     state.config = config;
@@ -470,11 +479,13 @@ async function refreshProtected() {
     await loadAudit({ reset: true, renderAfter: false });
   } catch (error) {
     if (error.status === 401 || error.code === "ADMIN_AUTH_REQUIRED") {
+      setCsrfToken("");
       state.authenticated = false;
       clearProtectedState();
       return;
     }
     if (error.code === "ADMIN_SETUP_REQUIRED") {
+      setCsrfToken("");
       state.authenticated = false;
       state.setupRequired = true;
       clearProtectedState();
@@ -586,7 +597,7 @@ async function login(event) {
 
   try {
     const response = await api.login(passwordHash);
-    state.csrfToken = response.csrf_token || "";
+    setCsrfToken(response.csrf_token || "");
     state.authenticated = true;
     state.setupRequired = false;
     elements.loginPasswordHash.value = "";
@@ -617,7 +628,7 @@ async function setup(event) {
   try {
     await api.setup(passwordHash);
     const response = await api.login(passwordHash);
-    state.csrfToken = response.csrf_token || "";
+    setCsrfToken(response.csrf_token || "");
     state.authenticated = true;
     state.setupRequired = false;
     elements.setupPasswordHash.value = "";
@@ -646,7 +657,7 @@ async function logout() {
   } catch (error) {
     handleError(error);
   } finally {
-    state.csrfToken = "";
+    setCsrfToken("");
     state.authenticated = false;
     clearProtectedState();
     render();
@@ -1260,7 +1271,7 @@ function enterFallbackMode() {
   state.mode = "fallback";
   state.authenticated = true;
   state.setupRequired = false;
-  state.csrfToken = "";
+  setCsrfToken("");
   state.status = { ...fallbackState.status };
   state.health = { ...fallbackState.health };
   state.upstreamHealth = {
@@ -1659,6 +1670,11 @@ function clearChildren(element) {
 }
 
 function handleError(error) {
+  if (error instanceof ApiError && error.code === "ADMIN_CSRF_REQUIRED") {
+    setCsrfToken("");
+    state.authenticated = false;
+    clearProtectedState();
+  }
   state.lastError = formatError(error);
   state.lastResult = "";
 }

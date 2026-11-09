@@ -65,6 +65,10 @@ Admin API or Nextcloud directly. The fixed route accepts `nextcloud.test`,
 `localhost`, and `127.0.0.1`, then forwards to Nextcloud's private Compose address.
 Nextcloud's generated login URLs are pinned to the loopback Edge address, so no
 `nextcloud.test` DNS or hosts-file entry is needed.
+The Nextcloud 30.0.17 image is pinned by its multi-platform index digest; this keeps
+the existing amd64 image while allowing the test upstream to run natively on arm64
+development hosts. The test upstream's architecture does not establish Edge product
+support for that architecture.
 
 Build and initialize the stack once. The default listener is `127.0.0.1:18080`;
 set `SPONZEY_NEXTCLOUD_EDGE_PORT` only when that local port is occupied.
@@ -73,6 +77,23 @@ set `SPONZEY_NEXTCLOUD_EDGE_PORT` only when that local port is occupied.
 docker compose --profile nextcloud-e2e -f docker-compose.test.yml build edge-nextcloud
 docker compose --profile nextcloud-e2e -f docker-compose.test.yml up -d --wait
 node tests/integration/nextcloud/verify.mjs
+```
+
+The verifier checks the local login page and script, signs in with the test
+account, checks the session, uploads or verifies a small test-owned WebDAV
+sentinel, compares its download, and confirms that an over-limit request is
+rejected without leaving a file. It does not print credentials, cookies, tokens,
+or file contents. The sentinel remains in the existing Nextcloud volume so a
+later run can verify it again. Browser interaction and restart preservation
+must still be checked separately.
+
+If `SPONZEY_NEXTCLOUD_E2E_ADMIN_PASSWORD` was overridden when the volume was
+initialized, provide the same test-only value in the verifier's environment.
+Changing the Compose bootstrap value later does not change an existing account.
+The focused verifier tests use only a local fake server:
+
+```bash
+node --test tests/integration/nextcloud/*.test.mjs
 ```
 
 Later checks reuse the same services and named volumes; do not add another

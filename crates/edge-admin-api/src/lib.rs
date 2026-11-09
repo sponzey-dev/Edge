@@ -248,6 +248,40 @@ pub struct ApplyResponse {
     pub restart_required: bool,
 }
 
+fn next_revision_id<R: ConfigRevisionRepository>(
+    revisions: &R,
+    base: &str,
+    operation: &str,
+) -> Result<ConfigRevisionId, AppError> {
+    use std::hash::{Hash, Hasher};
+    let full = format!("{base}-{operation}");
+    let prefix = if full.len() <= 100 {
+        full
+    } else {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        full.hash(&mut hasher);
+        format!("revision-{:016x}", hasher.finish())
+    };
+    let mut attempt = 0u64;
+    loop {
+        let candidate = if attempt == 0 {
+            prefix.clone()
+        } else {
+            format!("{prefix}-{attempt}")
+        };
+        let id = ConfigRevisionId::new(candidate);
+        if revisions.find_revision(&id)?.is_none() {
+            return Ok(id);
+        }
+        attempt = attempt.checked_add(1).ok_or_else(|| {
+            AppError::new(
+                ErrorCode::InternalBug,
+                "revision identifier space exhausted",
+            )
+        })?;
+    }
+}
+
 pub fn apply_config_source<R, A, C>(
     lifecycle: &mut ConfigLifecycle<R, A>,
     source: &str,
@@ -264,8 +298,11 @@ where
             "current revision missing",
         )
     })?;
-    let next_revision_id =
-        ConfigRevisionId::new(format!("{}-config-apply", current.revision.id.as_str()));
+    let next_revision_id = next_revision_id(
+        &lifecycle.revisions,
+        current.revision.id.as_str(),
+        "config-apply",
+    )?;
     let next = parse_valid_config_source(source, next_revision_id)
         .map_err(validation_errors_to_app_error)?;
 
@@ -299,11 +336,11 @@ where
         .snapshot;
     let proxy_host = proxy_host_from_request(request);
     let mut next = add_proxy_host(&current, &proxy_host);
-    next.revision_id = ConfigRevisionId::new(format!(
-        "{}-proxy-host-{}",
+    next.revision_id = next_revision_id(
+        &lifecycle.revisions,
         current.revision_id.as_str(),
-        proxy_host.id.as_str()
-    ));
+        &format!("proxy-host-{}", proxy_host.id.as_str()),
+    )?;
     let report = validate_config(&next);
     if !report.is_valid() {
         let first = &report.errors[0];
@@ -349,11 +386,11 @@ where
     ensure_proxy_host_exists(&current, &proxy_host_id)?;
     let proxy_host = proxy_host_from_request(request);
     let mut next = update_proxy_host(&current, &proxy_host);
-    next.revision_id = ConfigRevisionId::new(format!(
-        "{}-update-proxy-host-{}",
+    next.revision_id = next_revision_id(
+        &lifecycle.revisions,
         current.revision_id.as_str(),
-        proxy_host_id.as_str()
-    ));
+        &format!("update-proxy-host-{}", proxy_host_id.as_str()),
+    )?;
     let report = validate_config(&next);
     if !report.is_valid() {
         let first = &report.errors[0];
@@ -390,11 +427,11 @@ where
         .snapshot;
     ensure_proxy_host_exists(&current, &proxy_host_id)?;
     let mut next = remove_proxy_host(&current, &proxy_host_id);
-    next.revision_id = ConfigRevisionId::new(format!(
-        "{}-delete-proxy-host-{}",
+    next.revision_id = next_revision_id(
+        &lifecycle.revisions,
         current.revision_id.as_str(),
-        proxy_host_id.as_str()
-    ));
+        &format!("delete-proxy-host-{}", proxy_host_id.as_str()),
+    )?;
     let report = validate_config(&next);
     if !report.is_valid() {
         let first = &report.errors[0];
@@ -2261,6 +2298,54 @@ mod tests {
     }
 
     #[test]
+    fn repeated_proxy_host_updates_keep_revision_ids_bounded_and_unique_after_rollback() {
+        let mut sessions = SessionStore::default();
+        sessions.insert(Session {
+            session_id: "session-1".into(),
+            csrf_token: "csrf-1".into(),
+        });
+        let mut lifecycle = lifecycle_with_current();
+        let mut client = FakeCommandClient::default();
+        let body = r#"{"id":"app","name":"App","domains":["app.example.com"],"path_prefix":"/","upstream_url":"http://127.0.0.1:4000","https_enabled":false,"letsencrypt_enabled":false,"redirect_http_to_https":false,"enabled":true}"#;
+        let create = AdminHttpRequest::new(AdminHttpMethod::Post, "/api/v1/proxy-hosts", "create")
+            .with_session_id("session-1")
+            .with_csrf_token("csrf-1")
+            .with_body(body);
+        assert_eq!(
+            handle_proxy_host_create_http(&create, &sessions, &mut lifecycle, &mut client)
+                .status_code,
+            200
+        );
+        let update =
+            AdminHttpRequest::new(AdminHttpMethod::Patch, "/api/v1/proxy-hosts/app", "update")
+                .with_session_id("session-1")
+                .with_csrf_token("csrf-1")
+                .with_body(body);
+        let mut ids = Vec::new();
+        for _ in 0..30 {
+            assert_eq!(
+                handle_proxy_host_update_http(&update, &sessions, &mut lifecycle, &mut client)
+                    .status_code,
+                200
+            );
+            let id = lifecycle.revisions.current().unwrap().unwrap().revision.id;
+            assert!(
+                id.as_str().len() <= 128,
+                "revision identifier grew beyond the file-safe limit"
+            );
+            assert!(!ids.contains(&id), "revision identifiers must be unique");
+            ids.push(id);
+        }
+        lifecycle.revisions.set_current(&ids[0]).unwrap();
+        assert_eq!(
+            handle_proxy_host_update_http(&update, &sessions, &mut lifecycle, &mut client)
+                .status_code,
+            200
+        );
+        assert!(!ids.contains(&lifecycle.revisions.current().unwrap().unwrap().revision.id));
+    }
+
+    #[test]
     fn http_proxy_host_create_goes_through_lifecycle_and_core_command() {
         let mut sessions = SessionStore::default();
         sessions.insert(Session {
@@ -2623,6 +2708,83 @@ mod tests {
     }
 
     #[test]
+    fn http_config_rejects_missing_schema_and_unknown_fields_without_mutation() {
+        let mut sessions = SessionStore::default();
+        sessions.insert(Session {
+            session_id: "session-1".to_string(),
+            csrf_token: "csrf-1".to_string(),
+        });
+        let current = snapshot();
+        let source = render_mvp_config_snapshot(&current);
+        let cases = [
+            "invalid = [".to_string(),
+            source.replacen("schema_version = 1\n", "", 1),
+            format!("{source}\nunexpected_field = 1\n"),
+        ];
+
+        for invalid in cases {
+            let validation = AdminHttpRequest::new(
+                AdminHttpMethod::Post,
+                "/api/v1/config/validate",
+                "req-source-validation",
+            )
+            .with_session_id("session-1")
+            .with_body(invalid.clone());
+            let response = handle_http_request(
+                &validation,
+                AdminHttpContext {
+                    snapshot: &current,
+                    sessions: &sessions,
+                },
+            );
+            assert_eq!(response.status_code, 200);
+            assert!(response.body.contains("\"valid\":false"));
+
+            let diff = AdminHttpRequest::new(
+                AdminHttpMethod::Post,
+                "/api/v1/config/diff",
+                "req-source-diff",
+            )
+            .with_session_id("session-1")
+            .with_body(invalid.clone());
+            let response = handle_http_request(
+                &diff,
+                AdminHttpContext {
+                    snapshot: &current,
+                    sessions: &sessions,
+                },
+            );
+            assert_eq!(response.status_code, 200);
+            assert!(response.body.contains("\"valid\":false"));
+
+            let mut lifecycle = lifecycle_with_current();
+            let mut client = FakeCommandClient::default();
+            let apply = AdminHttpRequest::new(
+                AdminHttpMethod::Post,
+                "/api/v1/config/apply",
+                "req-source-apply",
+            )
+            .with_session_id("session-1")
+            .with_csrf_token("csrf-1")
+            .with_body(invalid);
+            let response = handle_config_apply_http(&apply, &sessions, &mut lifecycle, &mut client);
+            assert_eq!(response.status_code, 400);
+            assert!(client.commands.is_empty());
+            assert_eq!(
+                lifecycle
+                    .revisions
+                    .current()
+                    .unwrap()
+                    .unwrap()
+                    .revision
+                    .id
+                    .as_str(),
+                "rev-1"
+            );
+        }
+    }
+
+    #[test]
     fn http_proxy_host_delete_goes_through_lifecycle_and_core_command() {
         let mut sessions = SessionStore::default();
         sessions.insert(Session {
@@ -2954,6 +3116,27 @@ mod tests {
             parts.service.upstreams[1].administrative_state,
             edge_domain::UpstreamAdministrativeState::Draining
         );
+    }
+
+    #[test]
+    fn proxy_host_json_uses_top_level_fields_when_nested_policies_share_names() {
+        let body = r#"{
+            "upstreams":[{"id":"nested-id","url":"http://127.0.0.1:3000"}],
+            "health_check":{"enabled":false},
+            "retry":{"enabled":false,"max_retries":1,"max_replay_bytes":32768},
+            "passive_health":{"enabled":false},
+            "id":"host-id","name":"Host Name","domains":["host.example.test"],
+            "path_prefix":"/","https_enabled":false,"letsencrypt_enabled":false,
+            "redirect_http_to_https":false,"enabled":true
+        }"#;
+        let parsed = proxy_host_request_from_json(body).unwrap();
+        assert_eq!(parsed.id, "host-id");
+        assert!(parsed.enabled);
+        assert!(!parsed.retry.enabled);
+        assert_eq!(parsed.upstreams[0].id, "nested-id");
+
+        let missing_top_level_enabled = body.replace(",\"enabled\":true", "");
+        assert!(proxy_host_request_from_json(&missing_top_level_enabled).is_err());
     }
 
     #[test]
@@ -3666,5 +3849,35 @@ mod tests {
             )
         );
         assert!(!response.body.contains("redaction_applied"));
+    }
+
+    #[test]
+    fn support_bundle_http_rejects_caller_selected_inputs_before_collection() {
+        let sessions = authenticated_sessions();
+        let body = r#"{"path":"/tmp/other","artifacts":["secret"]}"#;
+        let unauthorized = AdminHttpRequest::new(
+            AdminHttpMethod::Post,
+            "/api/v1/support-bundles",
+            "req-support-denied",
+        )
+        .with_body(body);
+        assert_eq!(
+            handle_support_bundle_http(&unauthorized, &sessions, FakeSupportCollector).status_code,
+            401
+        );
+        let request = AdminHttpRequest::new(
+            AdminHttpMethod::Post,
+            "/api/v1/support-bundles",
+            "req-support-input",
+        )
+        .with_session_id("session-1")
+        .with_csrf_token("csrf-1")
+        .with_body(body);
+        let response = handle_support_bundle_http(&request, &sessions, FakeSupportCollector);
+        assert_eq!(response.status_code, 400);
+        assert_eq!(
+            response.error_code.as_deref(),
+            Some("HTTP_MALFORMED_REQUEST")
+        );
     }
 }

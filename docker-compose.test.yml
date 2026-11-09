@@ -100,7 +100,8 @@ services:
 
   nextcloud:
     profiles: ["nextcloud-e2e"]
-    image: nextcloud:30-apache@sha256:4ba4dff13ce3d461180b3b7984207a88ccdd04e9021933ad27336d7427959432
+    # Pinned 30.0.17 index: preserves the prior amd64 manifest and selects a native test image on arm64 hosts.
+    image: nextcloud:30-apache@sha256:fb966733647ea03f0446b0c22eac9733c8eb616d37b960caca9d4c3010e14a08
     init: true
     restart: unless-stopped
     environment:

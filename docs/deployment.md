@@ -38,7 +38,9 @@ An authenticated Admin session can create a bounded diagnostic bundle with
 endpoint. The request accepts no artifact list, filesystem path, or service-control
 argument. The server reads only its fixed support layout, rejects sensitive content
 and unsafe paths, and writes a private tar archive at the bootstrap-selected
-`data/support/latest.tar` path. The API/UI expose only archive identity, digest,
+`data/support/latest.tar` path. A successful new collection replaces the previous
+archive atomically; a failed collection leaves the previous archive in place.
+The API/UI expose only archive identity, digest,
 artifact summary, omissions, and size—never the archive path or source contents.
 
 For an offline deep collection, acquire the data-directory exclusive lock first.

@@ -7,7 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-age = { version = "0.12.1", default-features = false }
+age = { git = "https://github.com/str4d/rage.git", rev = "b5b68c4f4f7ea5c368bc060f6fe0237549c3a13f", default-features = false }
 edge-application = { path = "../edge-application" }
 edge-domain = { path = "../edge-domain" }
 edge-ports = { path = "../edge-ports" }
@@ -15,7 +15,7 @@ fs4 = "1.1.0"
 filetime = "0.2.29"
 getrandom = "0.3.4"
 instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen"] }
-rustls = { version = "0.23.41", default-features = false, features = ["std", "ring"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "ring"] }
 rustls-pki-types = "1.15.0"
 sha2 = "0.10.9"
 serde.workspace = true

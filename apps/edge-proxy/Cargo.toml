@@ -1,6 +1,6 @@
 [package]
 name = "edge-proxy"
-version = "0.1.9"
+version = "0.1.11"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -20,7 +20,7 @@ libc = "0.2.183"
 
 [dev-dependencies]
 rcgen = "0.14.8"
-rustls = { version = "0.23.41", default-features = false, features = ["std", "ring"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "ring"] }
 rustls-pki-types = "1.15.0"
 
 [[bin]]

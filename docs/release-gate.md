@@ -43,6 +43,16 @@ paths in checked-in `source.md` indexes. Artifact build and release publish both
 depend on these gates, and an audit tool installation or advisory database
 failure remains fail-closed.
 
+The backup adapter currently pins `age` to upstream commit
+`b5b68c4f4f7ea5c368bc060f6fe0237549c3a13f` because the published 0.12.1
+dependency graph contains RUSTSEC-2026-0387. This is unreleased upstream source,
+not a crates.io release. When a fixed release is available, evaluate switching
+back to a published version only after the audit and backward-compatible backup
+restore tests pass. Keep the exact commit and lockfile in candidate provenance.
+On 2026-11-09, the audit had no vulnerability errors but reported three allowed
+warnings: unmaintained `basic-toml` and `proc-macro-error2`, and the `tokio`
+AsyncFd advisory. Reassess current advisories for each candidate.
+
 The reusable test-only container may provide Linux source-level evidence:
 
 ```bash
@@ -72,7 +82,12 @@ claim. Record and cross-check all of the following against that candidate:
 - an anonymous pull of the exact digest before the prerelease is created
 
 A mutable image tag without its matching immutable digest is insufficient. The
-tag, archives, SBOM, OCI label, and digest must all identify one release.
+tag, archives, SBOM, OCI label, and digest must all identify one release. The
+SPDX files describe the release archives and their identity; they are not a
+complete transitive dependency inventory. The manifest validator checks their
+candidate version, source namespace and archive checksum against the manifest.
+These checks establish consistency of the recorded identities; they do not by
+themselves prove the build's source provenance or dependency inventory.
 The publishing workflow inspects the anonymously pulled image and fails before
 release assembly unless its revision equals the tagged commit and its version
 equals the SemVer tag. Independent clean-host evidence must repeat that check.

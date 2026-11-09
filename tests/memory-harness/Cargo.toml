@@ -15,7 +15,7 @@ edge-ports = { path = "../../crates/edge-ports" }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10.9"
-rustls = { version = "0.23.41", default-features = false, features = ["std", "ring"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "ring"] }
 rustls-pki-types = "1.15.0"
 socket2 = "0.6.4"
 

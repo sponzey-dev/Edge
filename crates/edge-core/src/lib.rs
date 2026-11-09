@@ -2481,8 +2481,14 @@ pub mod snapshot_http {
                             address: upstream_addr,
                         })
                         .filter(|_| !websocket_requested && client_allows_upstream_reuse);
-                    let reuse_existing =
-                        self.connections
+                    // An idle peer can close immediately after any liveness check.
+                    // Start non-replayable requests on a fresh socket; never resend them.
+                    let reuse_existing = matches!(request.method.as_str(), "GET" | "HEAD")
+                        && request.body.is_empty()
+                        && request.header_value("Expect").is_none()
+                        && request.header_value("Upgrade").is_none()
+                        && self
+                            .connections
                             .get(&connection_id)
                             .is_some_and(|connection| {
                                 reusable_upstream
@@ -5415,6 +5421,11 @@ pub mod snapshot_http {
                 && !self.upstream_registered
                 && self.reusable_upstream.as_ref() == Some(key)
                 && matches!(self.upstream_transport, UpstreamTransport::Plaintext(_))
+                && self.upstream.as_ref().is_some_and(|stream| {
+                    // EOF, errors, or unread bytes make an idle response stream unsafe to reuse.
+                    let mut byte = [0_u8; 1];
+                    matches!(stream.peek(&mut byte), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+                })
         }
 
         fn begin_response_framing(&mut self, max_header_bytes: usize, websocket_requested: bool) {
@@ -12644,23 +12655,27 @@ mod tests {
     fn snapshot_mio_runtime_closes_after_partial_response_reset_without_synthetic_502() {
         let (api_addr, partial_written_rx, reset_tx, api_backend) =
             spawn_partial_response_then_reset_backend();
+        let (healthy_addr, healthy_backend) = spawn_text_backend("recovered");
         let snapshot = snapshot_for_runtime(
-            vec![route_to_service(
-                "api",
-                "api.example.test",
-                "/",
-                "api-service",
-            )],
-            vec![service_with_upstream("api-service", api_addr)],
+            vec![
+                route_to_service("api", "api.example.test", "/", "api-service"),
+                route_to_service("healthy", "healthy.example.test", "/", "healthy-service"),
+            ],
+            vec![
+                service_with_upstream("api-service", api_addr),
+                service_with_upstream("healthy-service", healthy_addr),
+            ],
         );
         let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let listen = listener.local_addr().unwrap();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (resource_tx, resource_rx) = std::sync::mpsc::channel();
         let runtime_thread = thread::spawn(move || {
             run_snapshot_http_proxy_mio_for_test(
                 listener,
-                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default()),
-                1,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
+                    .with_resource_accounting_events(resource_tx),
+                2,
                 ready_tx,
             )
             .unwrap();
@@ -12699,7 +12714,19 @@ mod tests {
             }
         }
 
+        let mut saw_charge = false;
+        loop {
+            let event = resource_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("resource cleanup after reset");
+            saw_charge |= event.used_bytes > 0;
+            if saw_charge && event.used_bytes == 0 && event.live_charges == 0 {
+                break;
+            }
+        }
+        let healthy_response = request_host(listen, "healthy.example.test");
         let api_request = api_backend.join().unwrap();
+        let healthy_request = healthy_backend.join().unwrap();
         runtime_thread.join().unwrap();
         let response = String::from_utf8_lossy(&response);
 
@@ -12721,6 +12748,15 @@ mod tests {
             api_request.contains("Host: api.example.test"),
             "upstream request was {api_request:?}"
         );
+        assert!(healthy_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(healthy_response.ends_with("recovered"));
+        assert!(healthy_request.contains("Host: healthy.example.test"));
+        let final_resources = resource_rx
+            .try_iter()
+            .last()
+            .expect("resource accounting event");
+        assert_eq!(final_resources.used_bytes, 0);
+        assert_eq!(final_resources.live_charges, 0);
     }
 
     #[test]
@@ -13246,6 +13282,168 @@ mod tests {
         );
     }
 
+    fn assert_fresh_upstream_after_first_response(method: &str, close_idle_upstream: bool) {
+        let backend_listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let backend_addr = backend_listener.local_addr().unwrap();
+        let (close_tx, close_rx) = std::sync::mpsc::channel();
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let backend = thread::spawn(move || {
+            let (mut first, _) = backend_listener.accept().unwrap();
+            first
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut request = [0_u8; 1024];
+            assert!(first.read(&mut request).unwrap() > 0);
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirst")
+                .unwrap();
+            close_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            if close_idle_upstream {
+                first.shutdown(std::net::Shutdown::Both).unwrap();
+            }
+            closed_tx.send(()).unwrap();
+            backend_listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut second = loop {
+                match backend_listener.accept() {
+                    Ok((stream, _)) => break Some(stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            break None;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("upstream accept failed: {error}"),
+                }
+            }?;
+            second.set_nonblocking(false).unwrap();
+            second
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            loop {
+                let read = second.read(&mut request).unwrap();
+                if read == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&request[..read]);
+                if bytes.windows(4).any(|window| window == b"\r\n\r\n")
+                    && (!bytes
+                        .windows(19)
+                        .any(|window| window.eq_ignore_ascii_case(b"content-length: 3\r\n"))
+                        || bytes.ends_with(b"a=b"))
+                {
+                    break;
+                }
+            }
+            second
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecond",
+                )
+                .unwrap();
+            Some(bytes)
+        });
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "api",
+                "api.example.test",
+                "/",
+                "api-service",
+            )],
+            vec![service_with_upstream("api-service", backend_addr)],
+        );
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let listen = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let runtime = thread::spawn(move || {
+            run_snapshot_http_proxy_mio_for_test(
+                listener,
+                SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default()),
+                1,
+                ready_tx,
+            )
+            .unwrap();
+        });
+        ready_rx.recv().unwrap();
+        let mut client = StdTcpStream::connect(listen).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client
+            .write_all(b"GET /one HTTP/1.1\r\nHost: api.example.test\r\n\r\n")
+            .unwrap();
+        let mut first = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !first.ends_with(b"first") {
+            client.read_exact(&mut byte).unwrap();
+            first.push(byte[0]);
+        }
+        close_tx.send(()).unwrap();
+        closed_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        if close_idle_upstream {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let next = match method {
+            "POST" => {
+                b"POST /two HTTP/1.1\r\nHost: api.example.test\r\nContent-Length: 3\r\n\r\na=b"
+                    .as_slice()
+            }
+            "GET_BODY" => {
+                b"GET /two HTTP/1.1\r\nHost: api.example.test\r\nContent-Length: 3\r\n\r\na=b"
+                    .as_slice()
+            }
+            "GET_EXPECT" => {
+                b"GET /two HTTP/1.1\r\nHost: api.example.test\r\nExpect: test\r\n\r\n".as_slice()
+            }
+            _ => b"GET /two HTTP/1.1\r\nHost: api.example.test\r\n\r\n".as_slice(),
+        };
+        client.write_all(next).unwrap();
+        let mut response = [0_u8; 1024];
+        let result = client.read(&mut response);
+        let _ = client.shutdown(std::net::Shutdown::Both);
+        runtime.join().unwrap();
+        let observed = backend.join().unwrap();
+        let response =
+            result.map(|length| String::from_utf8_lossy(&response[..length]).to_string());
+        assert!(
+            response
+                .as_ref()
+                .is_ok_and(|value| value.contains("200 OK")),
+            "response={response:?}"
+        );
+        let observed = observed.expect("second request did not use a fresh upstream");
+        let verb = if method.starts_with("GET") {
+            "GET"
+        } else {
+            method
+        };
+        assert!(observed.starts_with(format!("{verb} /two HTTP/1.1\r\n").as_bytes()));
+        if method == "POST" || method == "GET_BODY" {
+            assert!(observed.ends_with(b"a=b"));
+        }
+    }
+
+    #[test]
+    fn snapshot_mio_reconnects_after_idle_upstream_closes_before_get() {
+        assert_fresh_upstream_after_first_response("GET", true);
+    }
+
+    #[test]
+    fn snapshot_mio_reconnects_after_idle_upstream_closes_before_post() {
+        assert_fresh_upstream_after_first_response("POST", true);
+    }
+
+    #[test]
+    fn snapshot_mio_uses_fresh_upstream_for_post_even_when_idle_socket_is_open() {
+        assert_fresh_upstream_after_first_response("POST", false);
+    }
+
+    #[test]
+    fn snapshot_mio_uses_fresh_upstream_for_get_with_body_or_expect() {
+        assert_fresh_upstream_after_first_response("GET_BODY", false);
+        assert_fresh_upstream_after_first_response("GET_EXPECT", false);
+    }
+
     #[test]
     fn snapshot_mio_runtime_does_not_reuse_plaintext_upstream_after_route_identity_change() {
         let first_listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
@@ -13484,10 +13682,20 @@ mod tests {
 
     #[test]
     fn snapshot_mio_runtime_maps_slow_client_header_to_one_closed_408_and_cleanup() {
-        let snapshot = snapshot_for_runtime(vec![], vec![]);
+        let (healthy_addr, healthy_backend) = spawn_text_backend("after-timeout");
+        let snapshot = snapshot_for_runtime(
+            vec![route_to_service(
+                "healthy",
+                "healthy.example.test",
+                "/",
+                "healthy-service",
+            )],
+            vec![service_with_upstream("healthy-service", healthy_addr)],
+        );
         let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let listen = listener.local_addr().unwrap();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (resource_tx, resource_rx) = std::sync::mpsc::channel();
         let runtime_thread = thread::spawn(move || {
             run_snapshot_http_proxy_mio_for_test(
                 listener,
@@ -13498,8 +13706,9 @@ mod tests {
                         upstream_read_timeout: Duration::from_secs(2),
                         client_write_timeout: Duration::from_secs(2),
                         ..ResourceLimits::default()
-                    }),
-                1,
+                    })
+                    .with_resource_accounting_events(resource_tx),
+                2,
                 ready_tx,
             )
             .unwrap();
@@ -13520,7 +13729,18 @@ mod tests {
             Err(error) => panic!("slow client read failed: {error}"),
         }
         let response = String::from_utf8_lossy(&response_bytes).to_string();
-
+        let mut saw_charge = false;
+        loop {
+            let event = resource_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("resource cleanup after slow client timeout");
+            saw_charge |= event.used_bytes > 0;
+            if saw_charge && event.used_bytes == 0 && event.live_charges == 0 {
+                break;
+            }
+        }
+        let healthy_response = request_host(listen, "healthy.example.test");
+        let healthy_request = healthy_backend.join().unwrap();
         runtime_thread.join().unwrap();
 
         assert!(
@@ -13536,6 +13756,15 @@ mod tests {
             response.contains("Connection: close\r\n"),
             "response was {response:?}"
         );
+        assert!(healthy_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(healthy_response.ends_with("after-timeout"));
+        assert!(healthy_request.contains("Host: healthy.example.test"));
+        let final_resources = resource_rx
+            .try_iter()
+            .last()
+            .expect("resource accounting event after recovery");
+        assert_eq!(final_resources.used_bytes, 0);
+        assert_eq!(final_resources.live_charges, 0);
     }
 
     #[test]
@@ -13777,14 +14006,16 @@ mod tests {
     #[test]
     fn snapshot_mio_runtime_tunnels_websocket_upgrade_after_101_response() {
         let (api_addr, api_backend) = spawn_websocket_backend();
+        let (healthy_addr, healthy_backend) = spawn_text_backend("after-websocket");
         let snapshot = snapshot_for_runtime(
-            vec![route_to_service(
-                "api",
-                "api.example.test",
-                "/",
-                "api-service",
-            )],
-            vec![service_with_upstream("api-service", api_addr)],
+            vec![
+                route_to_service("api", "api.example.test", "/", "api-service"),
+                route_to_service("healthy", "healthy.example.test", "/", "healthy-service"),
+            ],
+            vec![
+                service_with_upstream("api-service", api_addr),
+                service_with_upstream("healthy-service", healthy_addr),
+            ],
         );
         let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
         let listen = listener.local_addr().unwrap();
@@ -13804,7 +14035,7 @@ mod tests {
                 listener,
                 SnapshotProxyConfig::new(listen, snapshot, HttpLimits::default())
                     .with_resource_accounting_events(resource_tx),
-                1,
+                2,
                 ready_tx,
             )
             .unwrap();
@@ -13829,13 +14060,34 @@ mod tests {
         let _ = client.shutdown(std::net::Shutdown::Both);
 
         let upstream_request = api_backend.join().unwrap();
+        let mut resource_events = Vec::new();
+        loop {
+            let event = resource_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("resource cleanup after websocket");
+            resource_events.push(event);
+            let saw_client = resource_events
+                .iter()
+                .any(|item| item.websocket_client_to_upstream_bytes > 0);
+            let saw_upstream = resource_events
+                .iter()
+                .any(|item| item.websocket_upstream_to_client_bytes > 0);
+            if saw_client && saw_upstream && event.used_bytes == 0 && event.live_charges == 0 {
+                break;
+            }
+        }
+        let healthy_response = request_host(listen, "healthy.example.test");
+        let healthy_request = healthy_backend.join().unwrap();
         runtime_thread.join().unwrap();
-        let resource_events: Vec<_> = resource_rx.try_iter().collect();
+        resource_events.extend(resource_rx.try_iter());
 
         assert!(String::from_utf8_lossy(&response_headers).contains("101 Switching Protocols"));
         assert!(upstream_request.contains("Connection: Upgrade"));
         assert!(upstream_request.contains("Upgrade: websocket"));
         assert_eq!(&tunneled, b"pong");
+        assert!(healthy_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(healthy_response.ends_with("after-websocket"));
+        assert!(healthy_request.contains("Host: healthy.example.test"));
         assert!(
             resource_events
                 .iter()

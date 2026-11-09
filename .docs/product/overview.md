@@ -37,7 +37,7 @@ private trust를 관리하며, 장애를 확인하고 config/upgrade/backup 경�
 | Manual/file-backed certificate와 private PKI | 기존 사용자 결정. 인증서 없이 운영하는 제품으로 바꾸는 뜻이 아님 |
 | 안정화·속도·동작 보존 리팩터링 | 기존 개발 요청과 계획을 재사용. 새 기능에 필요한 경계만 정리 |
 | Node 성능 upstream·별도 부하 생성·지속 Compose | 기존 사용자 결정. 매번 새로운 Compose나 영속 volume을 만들지 않음 |
-| Nextcloud 실제 동작 검증 | 기존 사용자 요청. 현재 소스의 HEAD redirect 검사와 로그인·파일 흐름 검증은 구분 |
+| Nextcloud 실제 동작 검증 | 기존 사용자 요청. 재사용 Compose에서 로그인·파일·재시작을 검증하고 발행 배포판 검증과 구분 |
 | 일정·새 버전 번호·지원 SLA | 미확정. 임의의 출시일·수치·지속 지원 약속을 만들지 않음 |
 | 실행 소스 기준 | 2026-11-09 사용자 결정으로 `main` 확정. 작성 중인 문서를 보존해 작업 브랜치도 전환함 |
 

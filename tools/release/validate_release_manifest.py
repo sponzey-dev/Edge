@@ -72,6 +72,22 @@ def validate_image(value: object, tag: str) -> None:
         fail("RELEASE_IMAGE_DIGEST_INVALID", "image must use the canonical repository, tag, and immutable sha256 digest")
 
 
+def validate_sbom(value: object, tag: str, commit: str, platform: str, archive: str, digest: str) -> None:
+    if not isinstance(value, dict) or value.get("spdxVersion") != "SPDX-2.3":
+        fail("RELEASE_SBOM_INVALID", "SBOM must be SPDX-2.3 JSON")
+    namespace = f"https://github.com/sponzey-lab/Sponzey-Edge/releases/{tag}/{commit}/{platform}"
+    packages = value.get("packages")
+    files = value.get("files")
+    if value.get("documentNamespace") != namespace or not isinstance(packages, list) or not isinstance(files, list):
+        fail("RELEASE_SBOM_INVALID", "SBOM identity does not match candidate")
+    matching_packages = [item for item in packages if isinstance(item, dict) and item.get("SPDXID") == "SPDXRef-Package-edge-proxy"]
+    matching_files = [item for item in files if isinstance(item, dict) and item.get("SPDXID") == "SPDXRef-File-edge-proxy"]
+    if len(matching_packages) != 1 or matching_packages[0].get("name") != "edge-proxy" or matching_packages[0].get("versionInfo") != tag[1:]:
+        fail("RELEASE_SBOM_INVALID", "SBOM package version differs from candidate")
+    if len(matching_files) != 1 or matching_files[0].get("fileName") != archive or matching_files[0].get("checksums") != [{"algorithm": "SHA256", "checksumValue": digest}]:
+        fail("RELEASE_SBOM_INVALID", "SBOM archive identity or checksum differs")
+
+
 def validate(manifest_path: Path, artifacts: Path) -> dict[str, object]:
     manifest = read_json(manifest_path, "RELEASE_MANIFEST_INVALID")
     if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
@@ -105,8 +121,7 @@ def validate(manifest_path: Path, artifacts: Path) -> dict[str, object]:
         if sha256_file(archive_path) != digest:
             fail("RELEASE_CHECKSUM_MISMATCH", f"manifest checksum differs for {archive}")
         sbom_value = read_json(artifacts / sbom, "RELEASE_SBOM_INVALID")
-        if not isinstance(sbom_value, dict) or sbom_value.get("spdxVersion") != "SPDX-2.3":
-            fail("RELEASE_SBOM_INVALID", f"{sbom} is not SPDX-2.3 JSON")
+        validate_sbom(sbom_value, tag, commit, platform, archive, digest)
         expected_files.update({archive, sbom})
     if seen_platforms != EXPECTED_PLATFORMS:
         fail("RELEASE_PLATFORM_MISSING", "manifest must contain exactly linux-amd64 and linux-arm64")

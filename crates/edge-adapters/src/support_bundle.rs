@@ -87,9 +87,11 @@ impl SupportBundleCollector for FileSupportBundleCollector {
                 "support archive parent is unavailable",
             )
         })?;
-        if !parent_metadata.is_dir()
-            || parent_metadata.file_type().is_symlink()
-            || self.output.symlink_metadata().is_ok()
+        let output_is_safe = match self.output.symlink_metadata() {
+            Ok(metadata) => metadata.is_file() && !metadata.file_type().is_symlink(),
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        };
+        if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() || !output_is_safe
         {
             return Err(AppError::new(
                 ErrorCode::SupportBundleReportInvalid,
@@ -323,6 +325,62 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::SupportBundleReportInvalid);
         assert!(!output.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replaces_previous_archive_only_after_new_collection_succeeds() {
+        let root = root("replace");
+        let source = root.join("version.manifest");
+        let output = root.join("bundle.tar");
+        fs::write(&source, "version=first").unwrap();
+        let mut collector = FileSupportBundleCollector::new_online(&root, &output);
+        let first = collector
+            .collect_support_bundle(request(SupportBundleArtifact::VersionManifest))
+            .unwrap();
+        let previous = fs::read(&output).unwrap();
+        fs::write(&source, "-----BEGIN PRIVATE KEY-----").unwrap();
+        assert!(collector
+            .collect_support_bundle(request(SupportBundleArtifact::VersionManifest))
+            .is_err());
+        assert_eq!(fs::read(&output).unwrap(), previous);
+        fs::write(&source, "version=second").unwrap();
+        let second = collector
+            .collect_support_bundle(request(SupportBundleArtifact::VersionManifest))
+            .unwrap();
+        assert_ne!(first.archive.digest_sha256, second.archive.digest_sha256);
+        let file = File::open(&output).unwrap();
+        let mut archive = tar::Archive::new(file);
+        let mut contents = String::new();
+        archive
+            .entries()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "version=second");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_existing_output_symlink_without_modifying_its_target() {
+        use std::os::unix::fs::symlink;
+        let root = root("output-symlink");
+        let target = root.join("target");
+        let output = root.join("bundle.tar");
+        fs::write(&target, "original").unwrap();
+        symlink(&target, &output).unwrap();
+        let result = FileSupportBundleCollector::new_online(&root, &output)
+            .collect_support_bundle(request(SupportBundleArtifact::VersionManifest));
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        assert!(fs::symlink_metadata(output)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         let _ = fs::remove_dir_all(root);
     }
 

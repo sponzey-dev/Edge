@@ -9,6 +9,9 @@ from typing import Optional
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "release"))
+from assemble_release_artifacts import spdx_document
+
 VALIDATOR = ROOT / "tools" / "release" / "validate_release_manifest.py"
 IMAGE = "ghcr.io/sponzey-lab/sponzey-edge"
 
@@ -32,11 +35,11 @@ class ReleaseManifestContractTest(unittest.TestCase):
             sbom = f"edge-proxy-{platform}.spdx.json"
             archive_bytes = f"archive:{platform}".encode()
             (root / archive).write_bytes(archive_bytes)
-            sbom_body = '{"spdxVersion":"SPDX-2.3"}'
+            archive_digest = hashlib.sha256(archive_bytes).hexdigest()
+            sbom_body = json.dumps(spdx_document(archive, archive_digest, "v0.1.0", "a" * 40, platform, "2026-08-14T00:00:00Z"))
             if invalid_sbom and platform == "linux-amd64":
                 sbom_body = '{"spdxVersion":"SPDX-2.2"}'
             (root / sbom).write_text(sbom_body, encoding="utf-8")
-            archive_digest = hashlib.sha256(archive_bytes).hexdigest()
             sbom_digest = hashlib.sha256((root / sbom).read_bytes()).hexdigest()
             artifacts.append(
                 {

@@ -4,33 +4,57 @@ use edge_domain::{
     AppError, HttpHealthCheckPolicy, PassiveHealthMode, RetryPolicy, UpstreamAdministrativeState,
 };
 
-use crate::admin_json_contract::json_string_field;
-use crate::{
-    malformed_json_field, required_json_bool, required_json_string, required_json_string_array,
-    ProxyHostRequest, ProxyHostUpstreamRequest,
-};
+use crate::{malformed_json_field, ProxyHostRequest, ProxyHostUpstreamRequest};
 
 pub fn proxy_host_request_from_json(body: &str) -> Result<ProxyHostRequest, AppError> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|_| malformed_json_field("body"))?;
+    let string = |field: &str| {
+        value
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| malformed_json_field(field))
+    };
+    let boolean = |field: &str| {
+        value
+            .get(field)
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| malformed_json_field(field))
+    };
+    let domains = value
+        .get("domains")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| malformed_json_field("domains"))?
+        .iter()
+        .map(|domain| {
+            domain
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| malformed_json_field("domains"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let upstreams = proxy_host_upstreams_from_json(&value)?;
-    let upstream_url = json_string_field(body, "upstream_url")
+    let upstream_url = value
+        .get("upstream_url")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
         .or_else(|| upstreams.first().map(|upstream| upstream.url.clone()))
         .ok_or_else(|| malformed_json_field("upstream_url or upstreams"))?;
     Ok(ProxyHostRequest {
-        id: required_json_string(body, "id")?,
-        name: required_json_string(body, "name")?,
-        domains: required_json_string_array(body, "domains")?,
-        path_prefix: required_json_string(body, "path_prefix")?,
+        id: string("id")?,
+        name: string("name")?,
+        domains,
+        path_prefix: string("path_prefix")?,
         upstream_url,
         upstreams,
         health_check: proxy_host_health_check_from_json(&value)?,
         retry: proxy_host_retry_from_json(&value)?,
         passive_health: proxy_host_passive_health_from_json(&value)?,
-        https_enabled: required_json_bool(body, "https_enabled")?,
-        letsencrypt_enabled: required_json_bool(body, "letsencrypt_enabled")?,
-        redirect_http_to_https: required_json_bool(body, "redirect_http_to_https")?,
-        enabled: required_json_bool(body, "enabled")?,
+        https_enabled: boolean("https_enabled")?,
+        letsencrypt_enabled: boolean("letsencrypt_enabled")?,
+        redirect_http_to_https: boolean("redirect_http_to_https")?,
+        enabled: boolean("enabled")?,
     })
 }
 

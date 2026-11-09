@@ -37,3 +37,8 @@ Admin TCP endpoint by:
 ```bash
 cargo test -p edge-proxy support_bundle_endpoint_uses_fixed_paths_and_requires_csrf
 ```
+
+The UI keeps its CSRF token only in memory. After a reload, log in again before
+making changes; an existing session cookie alone does not enable protected actions.
+Logout, an expired session, or a rejected token clears the in-memory token. The session cookie keeps
+its existing Secure, HttpOnly, and SameSite attributes.

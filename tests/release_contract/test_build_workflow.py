@@ -16,6 +16,7 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("rustup toolchain install 1.94.0 --profile minimal", self.workflow)
         self.assertNotIn("rustup default stable", self.workflow)
         self.assertIn("cargo build --release --locked -p edge-proxy", self.workflow)
+        self.assertIn("cargo build --release --locked -p edge-proxy", (ROOT / "Dockerfile").read_text())
 
     def test_source_quality_job_blocks_build_and_release(self) -> None:
         self.assertIn("quality:\n    name: Source quality", self.workflow)

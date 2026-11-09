@@ -2,7 +2,7 @@ FROM rust:1.94.0-bookworm AS builder
 
 WORKDIR /workspace
 COPY . .
-RUN cargo build --release -p edge-proxy
+RUN cargo build --release --locked -p edge-proxy
 
 FROM debian:bookworm-slim
 

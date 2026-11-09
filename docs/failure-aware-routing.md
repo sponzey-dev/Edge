@@ -98,6 +98,12 @@ Dependencies remain outer mechanism to inner policy. Environment is read once in
 
 ## Fixed Retry Contract
 
+For sequential plaintext HTTP/1.1 traffic, an idle upstream is reused only for
+GET or HEAD with no body, Expect, or Upgrade when a nonblocking check finds no
+EOF, error, or unread bytes. Other requests start on a fresh upstream connection.
+This avoids sending a non-replayable request on a potentially stale idle socket;
+failures after a request begins still follow the existing retry and error contract.
+
 Retry is allowed only when every condition is true:
 
 1. service retry policy is enabled;

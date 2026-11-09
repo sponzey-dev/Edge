@@ -1,3 +1,5 @@
+import hashlib
+import json
 import subprocess
 import sys
 import tempfile
@@ -73,6 +75,28 @@ class ReleaseAssemblyContractTest(unittest.TestCase):
             result = self.assemble(root, root / "output")
 
         self.assertIn("RELEASE_ASSEMBLY_INPUT_INVALID", result.stderr)
+
+    def test_rejects_sbom_identity_tampering_even_with_updated_checksum(self) -> None:
+        for field in ("version", "source", "archive_digest"):
+            with self.subTest(field=field), self.make_input() as directory:
+                root = Path(directory)
+                output = root / "output"
+                self.assertEqual(self.assemble(root, output).returncode, 0)
+                sbom = output / "edge-proxy-linux-x86_64.spdx.json"
+                document = json.loads(sbom.read_text())
+                if field == "version":
+                    document["packages"][0]["versionInfo"] = "9.9.9"
+                elif field == "source":
+                    document["documentNamespace"] = document["documentNamespace"].replace("a" * 40, "c" * 40)
+                else:
+                    document["files"][0]["checksums"][0]["checksumValue"] = "0" * 64
+                sbom.write_text(json.dumps(document))
+                checksum_file = output / "SHA256SUMS"
+                lines = checksum_file.read_text().splitlines()
+                lines = [f"{hashlib.sha256(sbom.read_bytes()).hexdigest()}  {sbom.name}" if line.endswith(f"  {sbom.name}") else line for line in lines]
+                checksum_file.write_text("\n".join(lines) + "\n")
+                result = subprocess.run([sys.executable, str(MANIFEST_VALIDATOR), "--manifest", str(output / "release-manifest.json"), "--artifacts", str(output)], capture_output=True, text=True, check=False)
+                self.assertNotEqual(result.returncode, 0, field)
 
     def test_rejects_existing_output(self) -> None:
         with self.make_input() as directory:

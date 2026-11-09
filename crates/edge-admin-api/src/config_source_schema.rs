@@ -20,7 +20,7 @@ pub fn parse_valid_config_source(
 ) -> Result<ConfigSnapshot, Vec<ValidationError>> {
     let parsed = parse_mvp_config(source, revision_id)
         .map_err(|error| vec![ValidationError::new(error.code, error.message)])?;
-    let report = validate_config(&parsed.snapshot);
+    let report = ConfigValidator::default().validate_source(&parsed);
     if report.is_valid() {
         Ok(parsed.snapshot)
     } else {

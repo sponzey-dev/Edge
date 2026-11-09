@@ -1,5 +1,16 @@
 # Threat Model
 
+## Backup cryptography dependency provenance
+
+The backup adapter temporarily uses the user-approved pinned upstream `age`
+commit `b5b68c4f4f7ea5c368bc060f6fe0237549c3a13f` to remove the affected
+`crypto-bigint` dependency identified by RUSTSEC-2026-0387. The pinned source
+is unreleased and changes multiple cryptographic dependencies. A passing audit
+does not establish cryptographic correctness: maintainers must retain backup
+compatibility and restore verification and assess a published fixed release
+before replacing the pin. Product release remains subject to the existing
+candidate and operational evidence gates.
+
 Failure-aware routing never accepts request-selected upstreams and does not
 persist passive/drain runtime state. Retry requires a safe method, zero body,
 zero upstream bytes written, no response, one retry and bounded replay memory.

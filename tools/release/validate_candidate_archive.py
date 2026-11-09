@@ -16,6 +16,17 @@ import validate_release_manifest as release
 MAX_ASSET_BYTES = 256 * 1024 * 1024
 MAX_BINARY_BYTES = 128 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+REQUIRED_FILES = {
+    "edge-proxy", "current.toml", "systemd/sponzey-edge.service", "systemd/install.sh",
+    "systemd/uninstall.sh", "systemd/upgrade-helper", "systemd/preflight.sh",
+    "compose/compose-upgrade-helper", "compose/install.sh", "compose/prepare-upgrade.sh",
+    "compose/docker-compose.upgrade.yml", "compose/docker-compose.yml",
+}
+EXECUTABLES = {
+    "edge-proxy", "systemd/install.sh", "systemd/uninstall.sh",
+    "systemd/preflight.sh", "compose/compose-upgrade-helper", "compose/install.sh",
+    "compose/prepare-upgrade.sh",
+}
 
 
 def snapshot(source: Path, target: Path) -> None:
@@ -66,13 +77,28 @@ def validate(artifacts: Path, tag: str, commit: str, image: str) -> dict[str, st
         digest = hashlib.sha256()
         with tarfile.open(staged / amd64["archive"], mode="r:gz") as archive:
             binaries = []
+            seen = set()
+            regular_files = set()
             total = 0
             for member in archive:
+                name = member.name.removeprefix("./").rstrip("/")
+                parts = name.split("/")
+                if (not name or member.name.startswith("/") or "\\" in name
+                    or any(part in ("", ".", "..") for part in parts)
+                    or name in seen or not (member.isfile() or member.isdir())):
+                    raise ValueError("candidate archive contains unsafe or duplicate entries")
+                seen.add(name)
+                if member.isfile():
+                    regular_files.add(name)
+                    if name in EXECUTABLES and not member.mode & 0o111:
+                        raise ValueError("candidate executable lacks execute permission")
                 total += member.size
                 if total > MAX_UNCOMPRESSED_BYTES:
                     raise ValueError("candidate archive exceeds expanded bound")
-                if member.name in ("edge-proxy", "./edge-proxy"):
+                if name == "edge-proxy":
                     binaries.append(member)
+            if not REQUIRED_FILES.issubset(regular_files):
+                raise ValueError("candidate archive is missing required installation assets")
             if len(binaries) != 1 or not binaries[0].isfile() or not 0 < binaries[0].size <= MAX_BINARY_BYTES:
                 raise ValueError("candidate binary is absent, ambiguous, or unsafe")
             stream = archive.extractfile(binaries[0])

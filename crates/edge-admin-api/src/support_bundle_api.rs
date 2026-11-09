@@ -63,6 +63,26 @@ pub fn handle_support_bundle_http<C: SupportBundleCollector>(
     sessions: &SessionStore,
     collector: C,
 ) -> AdminHttpResponse {
+    if let Err(error) = require_session(sessions, request.session_id.as_deref()) {
+        return AdminHttpResponse::from_error(401, error, &request.request_id);
+    }
+    if let Err(error) = require_csrf(
+        sessions,
+        request.session_id.as_deref().unwrap_or_default(),
+        request.csrf_token.as_deref(),
+    ) {
+        return AdminHttpResponse::from_error(403, error, &request.request_id);
+    }
+    if !request.body.is_empty() {
+        return AdminHttpResponse::from_error(
+            400,
+            AppError::new(
+                ErrorCode::HttpMalformedRequest,
+                "support bundle request must be empty",
+            ),
+            &request.request_id,
+        );
+    }
     match create_support_bundle(
         sessions,
         request.session_id.as_deref(),

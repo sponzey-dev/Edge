@@ -22,8 +22,8 @@
 
 | 기준 | 로컬 확인 결과 | 해석 |
 | --- | --- | --- |
-| 작업 checkout·계획 기준 | `main`, `abc7f95` | 2026-11-09 사용자 결정. 작성 중인 문서를 보존하여 실제 작업 브랜치도 `main`으로 전환 |
-| 실행 패키지 | `apps/edge-proxy/Cargo.toml`, version `0.1.9` | 이후 후보의 tag와 일치하도록 변경·검증해야 함 |
+| 작업 checkout·계획 기준 | `main`, HEAD `e719cd0`와 미커밋 변경 | 2026-11-09 사용자 결정. 이전 기준 `abc7f95`에서 계획·검증 변경을 반영했으며 후보 소스는 아직 동결되지 않음 |
+| 실행 패키지 | 작업 트리의 `apps/edge-proxy/Cargo.toml`, version `0.1.11` | 사용자 확정 후보에 맞춘 미커밋 변경. 발행된 후보의 검증 증거는 아직 없음 |
 | 로컬 `v0.1.10` tag | `abc7f95` | Tag 존재를 확인. 해당 소스의 package version은 `0.1.9` |
 | 릴리스 metadata 계약 | Tag 버전과 package version의 정확한 일치를 요구 | `v0.1.10`은 `RELEASE_VERSION_MISMATCH` 조건에 해당 |
 
@@ -85,9 +85,9 @@ portable Linux archive, OCI version/revision identity 검증과 candidate promot
 재사용하는 `docker-compose.test.yml`의 `nextcloud-e2e` profile과
 `tests/integration/nextcloud/`도 현재 소스에 있다. Edge를 통한 Nextcloud loopback 접속,
 영속 volume과 `127.0.0.1:18080` redirect 설정을 포함한다.
-기존 대화의 접속/로그 확인은 현재 문서 검토에서 새로 수행한 로그인 E2E가 아니다.
-현재 `verify.mjs`는 루트의 HEAD 302/Location만 확인한다. 실제 로그인·세션·파일 요청은
-그 검사만으로 검증되었다고 볼 수 없어 프로젝트 목표 G03에서 보완한다.
+`verify.mjs`는 로그인 화면과 정적 자산, 테스트 계정 로그인·세션, 작은 WebDAV 파일과
+업로드 제한을 확인한다. 같은 volume의 재시작과 실제 브라우저 흐름도 소스 개발 환경에서
+확인했다. 이는 발행된 Linux 배포판의 clean-host 검증이나 성능 판정은 아니다.
 
 ## 검증 상태와 증거의 한계
 

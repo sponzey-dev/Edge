@@ -1,19 +1,23 @@
 # Failure-Aware Upstream Routing ADR
 
-Status: Phase 006 accepted design, implementation pending
+Status: Implemented Phase 006 design and contract record
 
 Date: 2026-07-14
 
 Scope: passive transport failure observation, replay-safe single retry, upstream administrative drain
 
-Deferred: weighted balancing, generic circuit breaker, response retry, request-body replay, Prometheus export,
-external Let's Encrypt staging
+Deferred: weighted balancing, generic circuit breaker, response retry, request-body replay,
+external Let's Encrypt automation. Prometheus export was added in a later phase.
+
+The baseline and insertion sequence below describe the original implementation context.
+Retry, passive health, and administrative drain are implemented; see
+[current state](current-state.md) for current scope and evidence limits.
 
 ## Baseline
 
 Phase 005 is the behavior baseline. The 2026-07-14 fresh run passed 457 workspace tests, fmt, clippy,
-architecture fitness, release documentation, and the four focused multi-upstream/health tests. Current
-production behavior is:
+architecture fitness, release documentation, and the four focused multi-upstream/health tests.
+Production behavior at that Phase 005 baseline was:
 
 - one global-cursor advance per newly selected request;
 - unhealthy targets excluded and all-unhealthy mapped to 503;
@@ -287,9 +291,9 @@ Application/adapter/core Red tests then cover queue full/closed, stale fencing, 
 publish, socket deregistration, one response, immutable buffer reuse, absolute deadline, HTTP/HTTPS parity,
 WebSocket preservation, config/API compatibility, logs, and release evidence.
 
-## First Tidy Insertion Plan
+## Historical First Tidy Insertion Plan
 
-The next task must not add retry behavior. It should introduce only:
+The first insertion task was constrained to the following tidy work before retry implementation:
 
 1. typed attempt progress/outcome representation around current connect/write/read/timeout branches;
 2. response-started and bytes-written accounting in socket-free connection I/O;

@@ -21,9 +21,9 @@ yet. Unknown fields are recorded and rejected by the default validator.
 ## Current Supported Fields
 
 Schema v1 remains the HTTP/no-client-auth compatibility format. Schema v2 adds
-typed private-trust references but does not by itself make referenced material
-available to the runtime; managed trust import and runtime activation are the
-next Phase 009 boundaries.
+typed private-trust references. Managed trust import and runtime activation are
+implemented; a referenced bundle must exist and pass verified preparation before
+activation. A schema version alone does not install certificate or trust material.
 
 ```toml
 schema_version = 1
@@ -224,7 +224,7 @@ automatically rewritten as v2.
   by the unified mio TLS connection state machine and covered by regression gates.
 - ACME resolver config is modeled in domain/application code but not fully
   exposed by the MVP file parser. External Let's Encrypt staging is deferred to
-  Post-MVP work in `docs/acme-staging.md`.
+  a separately reopened scope. `docs/acme-staging.md` records the deferral, not a runbook.
 
 ## Canonical Flow
 

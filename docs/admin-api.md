@@ -1,5 +1,11 @@
 # Admin API Contract
 
+> Current certificate operation uses manual/file-backed certificates and private
+> PKI. Issue/renew and HTTP-01 details below describe legacy adapter/API contracts,
+> not a supported external issuance workflow. Automation remains deferred until
+> explicitly reopened; see [current scope](current-state.md) and
+> [archived deferral notes](acme-staging.md).
+
 ## Failure-Aware Upstreams
 
 Proxy-host create/update accepts additive `retry`, `passive_health`, and

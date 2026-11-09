@@ -1,6 +1,8 @@
 # Admin Web UI
 
-Optional static Admin Web UI for the MVP control plane.
+Optional static Admin Web UI for the single-node control plane. Active product
+documents use `main` as their implementation baseline; see the
+[project plan](../../.docs/plans/plan.md) and [current state](../../docs/current-state.md).
 
 Rules:
 

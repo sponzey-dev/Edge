@@ -11,18 +11,21 @@ CANONICAL_REPOSITORY = "https://github.com/sponzey-lab/Sponzey-Edge"
 
 
 class ReleaseMetadataContractTest(unittest.TestCase):
-    def test_current_v019_candidate_records_v018_ineligibility_and_final_identity_evidence(self) -> None:
-        manifest = (ROOT / "apps" / "edge-proxy" / "Cargo.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "0.1.9"', manifest)
+    def test_historical_release_identities_and_outcomes_remain_distinct(self) -> None:
         current_state = (ROOT / "docs" / "current-state.md").read_text(encoding="utf-8")
-        self.assertIn("The public `v0.1.8` prerelease", current_state)
-        self.assertIn("it is not eligible for promotion", current_state)
-        self.assertIn("The public `v0.1.9` prerelease (`e1eedc4`)", current_state)
-        self.assertIn("Workflow `34082549484` passed", current_state)
-        self.assertIn("`v0.1.3→v0.1.9` systemd full upgrade", current_state)
-        self.assertIn("`v0.0.9→v0.1.9` Compose full upgrade", current_state)
-        self.assertIn("The `v0.1.0` tag is", current_state)
-        self.assertIn("immutable but non-releasable", current_state)
+        rows = {
+            cells[0].strip(" `"): [cell.strip(" `") for cell in cells[1:]]
+            for line in current_state.splitlines()
+            if line.startswith("| `v0.1.")
+            for cells in [line.strip("|").split("|")]
+        }
+        self.assertIn("non-releasable", rows["v0.1.0"])
+        self.assertIn("not-promotable", rows["v0.1.8"])
+        self.assertIn("prerelease", rows["v0.1.9"])
+        self.assertIn("e1eedc4", rows["v0.1.9"])
+        self.assertIn("34082549484", rows["v0.1.9"])
+        self.assertIn("v0.1.3→v0.1.9", current_state)
+        self.assertIn("v0.0.9→v0.1.9", current_state)
 
     def make_workspace(
         self,

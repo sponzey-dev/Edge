@@ -39,6 +39,12 @@ class BuildWorkflowContractTest(unittest.TestCase):
             self.assertIn("Source quality", contents, relative_path)
             self.assertIn("cargo audit", contents, relative_path)
 
+    def test_source_quality_runs_release_and_performance_contracts(self) -> None:
+        self.assertIn("python3 -m unittest discover -s tests/release_contract", self.workflow)
+        self.assertIn("tests/performance/contract/runner-contract.test.mjs", self.workflow)
+        self.assertIn("tests/performance/contract/artifact-audit-contract.test.mjs", self.workflow)
+        self.assertLess(self.workflow.index("Release tooling contracts"), self.workflow.index("Build release binary"))
+
     def test_reusable_test_container_uses_the_exact_workspace_toolchain(self) -> None:
         dockerfile = (ROOT / "Dockerfile.test").read_text(encoding="utf-8")
         self.assertIn("FROM rust:1.94.0-bookworm", dockerfile)

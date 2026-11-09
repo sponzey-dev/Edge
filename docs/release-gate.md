@@ -1,5 +1,10 @@
 # Product Release Gate
 
+The active project goals and acceptance dependencies are in
+[the main-based project plan](../.docs/plans/plan.md). This guide owns release
+commands and artifact requirements; goal completion also requires the plan's
+runtime, canonical resource, and independently verified evidence criteria.
+
 This document is the current release gate for the active single-node product
 plan. It replaces the removed local smoke-wrapper and certificate-automation
 runbooks. Historical Phase evidence is archive-only; it never approves a
@@ -92,7 +97,7 @@ Record a support-bundle request through `POST /api/v1/support-bundles` or the
 equivalent UI action. Verify the receipt is secret-free and that allowlist,
 byte/log-age bounds, and path/symlink rejection hold.
 
-The Edge performance Compose boundary is a separate characterization tool. Its
+The Edge performance Compose boundary defaults to source-build characterization. Its
 smoke may run with:
 
 ```bash
@@ -102,7 +107,9 @@ node tests/performance/bin/audit.mjs artifacts/performance/<run-id>
 
 Run a real profile only from a clean Git worktree. The runner rejects source
 changes before artifact, PKI, image-build, or Compose-service side effects, so
-the recorded commit/tree identity describes the measured source.
+the recorded commit/tree identity describes the measured source. Published-candidate baseline and
+soak require the explicit digest-pinned image mode in [testing.md](testing.md#release-performance-test-environment).
+The runner checks labels before service changes and the running container image before load.
 
 The C8 release performance contract uses audited three-run `baseline` artifacts.
 The candidate artifact must have the same captured host identity (kernel, CPU model/governor,
@@ -128,8 +135,11 @@ historical paths, transcripts, or success markers as evidence for a new tree.
 
 The candidate is eligible for promotion only after every source, artifact,
 Compose, systemd, support-bundle, and documentation item above is recorded for
-that same release identity. Commit the secret-free machine-readable promotion
-evidence as `release-evidence/<tag>/promotion.json`, then manually dispatch
-`.github/workflows/promote-release.yml` with that tag and path. The workflow
-rejects stale/missing identity, incomplete matrix, scope drift, and untracked
-evidence before changing the same GitHub prerelease to a product release.
+that same release identity. Schema v1 status-only promotion evidence is rejected;
+its inspection option cannot authorize a release. Schema v2 can inspect digest-bound records,
+candidate image provenance and independently recalculated performance. A matching fixture and
+verified archive can satisfy the G01 inspection contract; that does not establish that the
+reported operational observations were collected from a real host. The
+`.github/workflows/promote-release.yml` workflow remains fail-closed until G07. Hashes and recorded
+Docker facts establish consistency, not proof of an untrusted operator's actions. Actual candidate,
+clean-host and performance evidence must still be collected before promotion.

@@ -40,12 +40,13 @@ The tag, commit, archive checksums, SBOM, OCI label, and immutable image digest
 must identify the same release. A mutable tag without its matching digest is not
 sufficient.
 
-## Promotion Evidence JSON
+## Historical Promotion Evidence JSON
 
-The SemVer workflow creates a prerelease candidate only. After completing every
-clean-host cell, commit a secret-free file at
-`release-evidence/<semver_tag>/promotion.json` with this exact shape, replacing
-the placeholders with the candidate identity and outcomes:
+The SemVer workflow creates a prerelease candidate only. The following schema v1
+is retained for historical inspection. It cannot authorize promotion: it records
+status strings without binding the underlying evidence. A replacement contract
+is under development; do not submit this example as promotion evidence. Its former
+index filename was `promotion.json`.
 
 ```json
 {
@@ -64,11 +65,97 @@ the placeholders with the candidate identity and outcomes:
 }
 ```
 
-Dispatch `.github/workflows/promote-release.yml` only after a reviewer has
-verified the command transcripts referenced below. The workflow validates this
-file against the immutable tag commit and prerelease image digest, then changes
-only that GitHub prerelease to a product release. It does not create a tag,
-replace an image, or perform certificate automation.
+The validator's explicit `--inspect-legacy` option can inspect this historical
+shape and returns `promotion_eligible: false`. The promotion workflow does not
+use that option and rejects schema v1. The replacement must bind the immutable
+candidate to independently checked source, operational and performance evidence.
+
+## Schema v2 Evidence and Inspection
+
+Schema v2 is inspection-only: source and operational result observations are
+not yet independently validated against substantive original outputs. `--inspect-v2`
+returns `promotion_eligible: false`; promotion remains fail-closed even for committed records.
+The index is a secret-free `promotion.json` with `schema_version: 2`, the
+candidate `tag`, `commit`, digest-pinned `image`, the two certificate-scope
+booleans, and a `records` object containing exactly:
+
+- `source_quality`, `support_bundle`, `compose`, and `systemd`: each references
+  a bounded JSON receipt by relative `path` and lowercase `sha256`.
+- `c8_reference`, `c8_candidate`, and `soak`: each maps the exact original
+  performance filenames to their relative `path` and lowercase `sha256`.
+  Baselines require `metadata.json`, `state.json`, `summary.json`,
+  `edge-resource-samples.json`, and `baseline-1.json` through `baseline-3.json`;
+  soak requires the first four and `soak-1.json`.
+
+Each receipt has `schema_version: 1`, its `kind`, the exact candidate identity,
+the complete named `checks`, and a digest-bound `trace`. A trace contains the
+same identity and one observation per check; each observation binds a safe,
+secret-free original JSON output by path and digest. For source quality, each
+output records `command` as an exact argument array, `source_commit`, integer
+`exit_code`, and string `stdout` and `stderr`; the validator checks the fixed
+commands and a successful exit against the candidate commit. The expected check
+names and commands are defined in the validator. Do not include cookies,
+credentials, request bodies, private keys, or raw sensitive logs.
+For source quality, `tools/release/collect_source_quality.py` can create a new
+evidence root and its receipt, trace and original command outputs. Supply
+`--workspace`, `--output`, `--tag`, `--commit` and the digest-pinned `--image`.
+It requires a clean checkout of that commit before and after the fixed commands;
+failed commands, oversized output or detected sensitive content prevent
+publication. Review all output before committing: automatic detection is not
+exhaustive. Add the other evidence under the same root; the printed receipt
+reference belongs in `records.source_quality`. Running this collector runs the
+full source-quality commands, including `cargo audit`, and is not itself a
+candidate release or clean-host test.
+Support authentication observations record only HTTP status codes: unauthenticated
+401 and authenticated 200, and a separate missing-CSRF 403 with authenticated
+200. The `allowlist_and_bounds` observation references the original uncompressed
+support tar and its API response by relative path and SHA-256. The inspector
+checks the receipt digest, member allowlist and types, content byte bound,
+manifest and secret indicators without extracting the tar. `log_observation`
+records Unix collection and source modification times plus the archived product
+log SHA-256; their difference must be 0–86400 seconds. Those timestamps remain
+reported observations and need a trustworthy collection procedure. Unsafe-path
+rejection is checked against a separate archive and response showing the symlinked
+fixture was omitted; the source type remains a reported observation. Deployment
+evidence also needs further original verification before
+promotion can be enabled. Do not commit an archive
+until its owner has reviewed it for secrets; automatic detection is not exhaustive.
+
+Compose/systemd inspection compares structured observations: forwarding must
+return HTTP 200 with the SHA-256 of `sponzey-release-fixture\n`; the host-side
+Admin listener must use a loopback IP and refuse a remote probe. Preservation
+records hashes of selected config, certificate, data and the *original audit
+prefix* before upgrade, after upgrade and after rollback, so appended audit
+events do not appear as loss. Install/upgrade/rollback records also cross-check
+their candidate and predecessor observations; restart, SIGTERM and cleanup have
+separate observations. To cross-check the systemd executable against local
+candidate release assets, pass `--release-artifacts <directory>` to the v2
+inspector. It snapshots and validates the manifest, checksums and SBOMs, then
+compares the executable inside the amd64 archive with the installation and
+upgrade observations. The result reports `archive_binding_verified`; it remains
+false when that option is omitted. This offline check does not establish that
+the directory was obtained from GitHub. The promotion workflow downloads the
+candidate's listed assets directly from its GitHub prerelease into a temporary
+directory before validation. When every v2 check and archive binding succeeds,
+inspection reports `evidence_contract_valid: true` and `promotion_eligible: false`;
+without archive binding the contract-valid flag is false. These flags describe
+the G01 contract for supplied records, not proof that observations were actually
+collected or that G05–G07 are complete. Product promotion remains disabled until G07.
+These records describe observed results; hashes and recorded command outputs
+establish consistency, not cryptographic proof that an untrusted operator ran them.
+
+Inspection checks every file's digest and safe path, rejects missing or extra
+records, recomputes summaries from original k6 results and samples, applies the
+existing C8 evaluator, and checks the approved reference source, host/config
+identity, and the 30-minute soak. The Node.js verifier is required and failure
+to run it is a rejection. `--require-tracked` also requires the index and all
+referenced files to be committed and unchanged. The promotion workflow uses that
+option. Historical source-build metadata cannot prove a published image was
+measured. Candidate baseline and soak must contain runner-recorded digest,
+revision/version labels and matching inspected/container image IDs; use the
+explicit candidate mode documented in [testing.md](testing.md#release-performance-test-environment).
+The approved historical reference predates config hashes: only its exact approved
+commit and tree use the hash of the configuration at that commit.
 
 ## Source-Level Gate
 

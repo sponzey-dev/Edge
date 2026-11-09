@@ -2,31 +2,65 @@
 
 [한국어](README.ko.md)
 
-Sponzey Edge Proxy is a Rust/mio-based self-hosted reverse proxy with an optional
-Admin Web UI.
+Sponzey Edge Proxy is a self-hosted reverse proxy and edge gateway for operators
+who need to publish web services safely without making every routing change a
+manual proxy-configuration exercise. A Rust/mio data plane handles traffic; an
+optional Admin Web UI provides a client for the versioned Admin API.
 
-## Final Goal
+## Purpose And Users
 
-Build a predictable, memory-safe edge gateway that combines:
+The project serves small web-service operators, Docker Compose teams, self-hosting
+users, and operators managing several domains and upstream services. They need to
+change routing, understand failures, and recover configuration and service data
+without disrupting working traffic or exposing administrative access and secrets.
 
-- a small Rust/mio data plane for HTTP, HTTPS, routing, health, and backpressure
-- safe configuration validation, acknowledged apply, revision history, and rollback
-- an optional Admin Web UI that operates only through a stable Admin API
-- secure private-PKI operation, observable failures, encrypted recovery, and durable audit
-- clean boundaries that allow future discovery, identity, protocol, and multi-node features
+The long-term goal is a predictable edge gateway whose configuration, visibility,
+and recovery remain understandable as its capabilities grow. NGINX-style web-service
+operation, HAProxy-style availability, Traefik-style discovery, and Caddy-style ease
+of administration inform that direction; they are not a promise of feature parity.
 
-  without coupling them to the proxy hot path
+## Product Goals And Success Criteria
 
-Correctness, safety, operability, simplicity, and performance take priority over
-feature count.
+- Operators can publish and maintain services through the UI or the same validated
+  API, while the proxy continues to work without the UI.
+- Invalid or rejected configuration preserves the working runtime; revisions and
+  rollback make changes traceable and recoverable.
+- Bounded connections, buffers, timeouts, and backpressure keep resource use and
+  failure behavior predictable under the tested workloads.
+- Health, logs, metrics, audit, and diagnostic bundles let operators locate failures
+  without exposing credentials or traffic payloads.
+- Installation, upgrade, rollback, and encrypted recovery are reproducible against
+  one identified release artifact, with functional and performance evidence.
 
-## Supported Release Platform
+Correctness → safety → operability → simplicity → performance → feature count.
+Rust memory safety and historical benchmarks do not replace runtime verification.
 
-The current product candidate is supported on Linux `amd64` only. A published
-Linux `arm64` artifact is unverified and unsupported until native Linux arm64
-Compose and systemd evidence is collected in a separately approved plan.
+The immediate focus is a reliable **single-node product**, beyond the original MVP.
+The product candidate targets Linux `amd64` through Docker Compose and systemd.
+Build artifacts for other architectures or operating systems do not establish
+operational support. All active product documents and the project plan use `main`
+as the implementation baseline, confirmed on 2026-11-09. See
+[current state](docs/current-state.md) for source identities, evidence limits,
+and the tag/package-version mismatch.
 
-## Currently Supported Features
+## Core Operator Flow
+
+1. Install a pinned binary/image and complete the protected Admin setup, or use
+   the headless configuration/API path.
+2. Define a domain/path and upstream, adding manual certificates and managed
+   private trust when HTTPS or client-certificate authentication is required.
+3. Validate and review the change, then apply it through the acknowledged config
+   lifecycle. Failed activation retains the previous state.
+4. Inspect health, resource status, logs, metrics, and audit; collect a bounded
+   support bundle when diagnosis is needed.
+5. Roll back a configuration or use the offline backup/upgrade/recovery workflow
+   to restore operation and verify forwarding and Admin access.
+
+## Implemented Capabilities
+
+The following capabilities exist in the source. Their presence is distinct from
+release qualification; the [current-state record](docs/current-state.md) separates
+implementation, historical checkpoints, and remaining productization evidence.
 
 ### Reverse Proxy And Routing
 
@@ -55,10 +89,12 @@ Compose and systemd evidence is collected in a separately approved plan.
 - required inbound mTLS with managed client Root trust
 - generation-atomic config, TLS, and health activation with rollback compensation
 
-External Let's Encrypt staging/production issuance and operational renewal validation are
-deferred to Post-MVP work. Current TLS operation uses manual or private-PKI certificates.
+Certificate operation currently uses manual/file-backed certificates and private
+PKI. Let's Encrypt, ACME, HTTP-01/DNS-01, and automatic renewal remain on hold
+until the user explicitly reopens that scope. Existing adapter/test code does not
+make external certificate automation a supported operator workflow.
 
-## Support bundle
+### Support Bundle
 
 Authenticated Admin users can create a bounded diagnostic bundle from the Admin UI or
 `POST /api/v1/support-bundles` with CSRF protection. The request accepts no path or
@@ -74,7 +110,6 @@ included in the API/UI result. This is not a backup replacement.
 - safe apply and rollback that preserve the previous runtime state on failure
 - optional same-origin Admin Web UI
 - authenticated Admin API with setup, login/logout, CSRF protection, Proxy Host CRUD,
-
   configuration lifecycle, certificate/trust management, health, metrics, logs, and audit search
 - headless operation without the Admin Web UI
 
@@ -85,14 +120,43 @@ included in the API/UI result. This is not a backup replacement.
 - optional loopback-only Prometheus metrics and authenticated Admin metric summary
 - bounded, restart-safe, file-backed audit ledger with authenticated Admin search
 - encrypted offline backup, authenticated verification, fresh restore, replace, rollback,
-
   and crash recovery
 - backup schema v1/v2 compatibility and schema v3 trust/audit preservation
-- Docker and Docker Compose packaging
+- operational liveness/readiness probes and bounded SIGTERM drain
+- Docker Compose and systemd packaging with journaled offline upgrade/recovery helpers
 
-The authoritative implemented and deferred scope is in
-[`docs/current-state.md`](docs/current-state.md). Detailed product direction and development
-evidence are in [`PROJECT.md`](PROJECT.md).
+### Scope Boundaries And Future Direction
+
+Current productization excludes HTTP/2, HTTP/3, gRPC, TCP proxying, Kubernetes,
+multi-node control, WAF, cache/static hosting, advanced balancing, and a plugin
+marketplace. Service discovery, identity integration, richer protocols, and
+multi-node management remain possible later extensions, not committed deliveries.
+They must preserve the independent data plane and validated configuration boundary.
+
+Optional/client-identity mTLS, outbound client-certificate mTLS, TLS passthrough,
+remote telemetry/audit storage, and multi-user RBAC/OIDC are not current features.
+Commercial editions, pricing, and a hosted control plane are not defined product
+commitments. The existing code and documentation use the MIT license below.
+
+## Service Form And Technology
+
+The operator runs the proxy on their own host. The static Admin UI is optional
+and uses `/api/v1`; separate UI/control-plane deployment is an architectural
+direction, not a claim that a distributed management product already exists.
+
+| Component | Current implementation and role |
+| --- | --- |
+| Proxy runtime | Rust 2021 and mio, explicit socket/TLS/timeout state machines |
+| TLS | rustls in adapters; manual certificates and explicit private trust |
+| Control plane | Framework-free Rust Admin API; HTML/CSS/JavaScript UI |
+| Configuration and state | Typed TOML config, file-backed revisions, certificate/trust/secret stores |
+| Recovery and audit | age encryption, tar archives, SHA-256 integrity and a file-backed audit ledger |
+| Packaging | Binary, Docker/Compose, and Linux systemd helpers |
+| Test tooling | Rust workspace/memory harness; Node.js upstream and separate k6 load generator |
+
+The core hot path uses mio rather than Tokio. Async dependencies in an outer
+adapter do not change that runtime contract. See [architecture](docs/architecture.md)
+and [dependency boundaries](docs/dependencies.md).
 
 ## Installation
 
@@ -182,6 +246,9 @@ the functional gate:
 ```bash
 node tests/performance/bin/run.mjs smoke
 ```
+
+The default local build is characterization. Candidate performance evidence requires an explicit
+locally available digest-pinned published image; see the candidate commands in the testing guide.
 
 Run a real profile only from a clean Git worktree; the runner rejects source changes before it
 creates artifacts, prepares PKI, builds images, or changes Compose services. The runner recreates
@@ -298,3 +365,27 @@ Configuration fields and API examples are documented in:
 - [`docs/admin-curl.md`](docs/admin-curl.md)
 - [`docs/admin-api.md`](docs/admin-api.md)
 - [`docs/nginx-migration.md`](docs/nginx-migration.md)
+
+## Documentation
+
+Start with the [document map](.docs/README.md) and [project plan](.docs/plans/plan.md)
+for goals, sequence, dependencies, and acceptance criteria.
+
+| Need | Document |
+| --- | --- |
+| Product purpose, users, direction, and scope | This README; [한국어](README.ko.md) |
+| Implementation, source baselines, evidence, and remaining qualification | [Current state](docs/current-state.md) |
+| Engineering rules and design boundaries | [AGENTS.md](AGENTS.md), [architecture](docs/architecture.md), [ADRs](docs/adr/) |
+| Configuration and control-plane contracts | [Config schema](docs/config-schema.md), [Admin API](docs/admin-api.md), [curl workflow](docs/admin-curl.md) |
+| Installation and operations | [Install](docs/install.md), [deployment](docs/deployment.md), [backup/restore](docs/backup-restore.md), [troubleshooting](docs/troubleshooting.md) |
+| Observability and security | [Observability](docs/observability.md), [threat model](docs/threat-model.md), [private PKI](docs/private-pki-testing.md) |
+| Verification and release evidence | [Testing](docs/testing.md), [release gate](docs/release-gate.md), [evidence template](docs/release-evidence-template.md) |
+
+Phase-specific design and completion records preserve historical decisions and
+evidence. Their original baselines, script names, or proposed features do not
+override current scope or establish qualification for a different source identity.
+
+## License
+
+The project source and accompanying documentation are licensed under [MIT](LICENSE).
+Third-party dependencies retain their own licenses; see [dependencies](docs/dependencies.md).

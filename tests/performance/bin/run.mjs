@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { compareBaseline, summarizeFiles, summarizeResources } from "./summary.mjs";
+import { isCandidateImage, validateCandidateImage } from "./candidate-provenance.mjs";
+
+export { validateCandidateImage } from "./candidate-provenance.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const compose = ["compose", "--profile", "performance", "-f", "docker-compose.test.yml"];
@@ -68,12 +72,13 @@ export function buildLoadGeneratorCommand({ profile, runId: id, runIndex }) {
   ];
 }
 
-function command(program, args) {
+function command(program, args, env) {
   return execFileSync(program, args, {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 16 * 1024 * 1024,
+    ...(env ? { env } : {}),
   });
 }
 
@@ -117,7 +122,8 @@ export function hostIdentity() {
   };
 }
 
-function metadata(profile, id, source) {
+function metadata(profile, id, source, imageId, candidateProvenance) {
+  const config = readFileSync(path.join(root, "tests/performance/config/edge-perf.toml"));
   return {
     run_id: id,
     profile,
@@ -126,7 +132,10 @@ function metadata(profile, id, source) {
     host_platform: process.platform,
     host_arch: process.arch,
     host_identity: hostIdentity(),
-    edge_image_id: command("docker", ["image", "inspect", "--format", "{{.Id}}", "sponzey-edge-test-edge-perf"]).trim(),
+    edge_image_id: imageId,
+    config_sha256: createHash("sha256").update(config).digest("hex"),
+    measurement_mode: candidateProvenance ? "published_candidate" : "source_build",
+    ...(candidateProvenance ? { candidate_image: candidateProvenance.image, candidate_provenance: candidateProvenance } : {}),
   };
 }
 
@@ -140,8 +149,8 @@ export function parseDockerStats(line, sampledAt) {
   return { sampled_at: sampledAt, cpu_percent: cpu, memory_usage_bytes: Math.round(Number(match[1]) * multiplier) };
 }
 
-function sampleEdge() {
-  const container = command("docker", [...compose, "ps", "-q", "edge-perf"]).trim();
+function sampleEdge(composeEnv) {
+  const container = command("docker", [...compose, "ps", "-q", "edge-perf"], composeEnv).trim();
   if (!container) throw new Error("edge-perf container is unavailable for sampling");
   return parseDockerStats(
     command("docker", ["stats", "--no-stream", "--format", "{{json .}}", container]).trim(),
@@ -149,7 +158,7 @@ function sampleEdge() {
   );
 }
 
-function runLoadGenerator(args, samples) {
+function runLoadGenerator(args, samples, composeEnv) {
   return new Promise((resolve, reject) => {
     let samplingError;
     let diagnostics = "";
@@ -158,7 +167,7 @@ function runLoadGenerator(args, samples) {
       diagnostics = `${diagnostics}${chunk}`.slice(-(64 * 1024));
     };
     const sample = () => {
-      try { samples.push(sampleEdge()); } catch (error) { samplingError ??= error; }
+      try { samples.push(sampleEdge(composeEnv)); } catch (error) { samplingError ??= error; }
     };
     sample();
     const timer = setInterval(sample, 1_000);
@@ -168,7 +177,7 @@ function runLoadGenerator(args, samples) {
       const events = text.match(/\{"event":"edge\.payload\.failed"[^\n]*\}/g) ?? [];
       if (events.length > 0) failureEvents = `${failureEvents}${events.join("\n")}\n`.slice(-(8 * 1024));
     };
-    const child = spawn("docker", args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("docker", args, { cwd: root, env: composeEnv, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", captureDiagnostics);
     child.stderr.on("data", captureDiagnostics);
     child.once("error", (error) => { clearInterval(timer); reject(error); });
@@ -186,11 +195,15 @@ function runLoadGenerator(args, samples) {
   });
 }
 
-export async function runProfile(profile, { dryRun = false, artifactRoot = path.join(root, "artifacts", "performance") } = {}) {
+export async function runProfile(profile, { dryRun = false, candidateImage = null, artifactRoot = path.join(root, "artifacts", "performance") } = {}) {
   const plan = buildRunPlan(profile);
-  if (dryRun) return { ...plan, dry_run: true };
+  if (candidateImage !== null && !isCandidateImage(candidateImage)) throw new Error("invalid candidate image identity");
+  if (dryRun) return { ...plan, dry_run: true, ...(candidateImage ? { candidate_image: candidateImage } : {}) };
 
   const source = sourceIdentity();
+  const composeEnv = { ...process.env, SPONZEY_PERFORMANCE_EDGE_IMAGE: candidateImage ?? "sponzey-edge-test-edge-perf" };
+  const inspection = candidateImage ? JSON.parse(command("docker", ["image", "inspect", "--format", "{{json .}}", candidateImage])) : null;
+  if (candidateImage !== null) validateCandidateImage(candidateImage, source.source_commit, inspection);
   const id = runId();
   const finalDir = path.join(artifactRoot, id);
   const tempDir = `${finalDir}.partial`;
@@ -199,21 +212,25 @@ export async function runProfile(profile, { dryRun = false, artifactRoot = path.
   mkdirSync(tempDir, { recursive: true, mode: 0o700 });
   try {
     history = transition(history, RunState.Readiness);
-    command("docker", [...compose, "rm", "-s", "-f", "edge-perf", "node-upstream"]);
+    command("docker", [...compose, "rm", "-s", "-f", "edge-perf", "node-upstream"], composeEnv);
     const runtime = path.join(artifactRoot, "edge-perf-runtime");
     if (existsSync(runtime)) {
       command(process.execPath, ["tests/performance/bin/prepare-pki-runtime.mjs", "--clean", "--output", runtime]);
     }
     command(process.execPath, ["tests/performance/bin/prepare-pki-runtime.mjs", "--output", runtime]);
-    command("docker", [...compose, "build", "edge-perf"]);
-    command("docker", [...compose, "up", "-d", "--wait", "edge-perf", "node-upstream"]);
-    writeFileSync(path.join(tempDir, "metadata.json"), `${JSON.stringify(metadata(profile, id, source), null, 2)}\n`, { mode: 0o600 });
+    if (!candidateImage) command("docker", [...compose, "build", "edge-perf"], composeEnv);
+    command("docker", [...compose, "up", "-d", "--wait", ...(candidateImage ? ["--no-build", "--pull", "never"] : []), "edge-perf", "node-upstream"], composeEnv);
+    const container = command("docker", [...compose, "ps", "-q", "edge-perf"], composeEnv).trim();
+    if (!container) throw new Error("edge-perf container is unavailable for provenance");
+    const imageId = command("docker", ["inspect", "--format", "{{.Image}}", container]).trim();
+    const provenance = candidateImage ? validateCandidateImage(candidateImage, source.source_commit, inspection, imageId) : null;
+    writeFileSync(path.join(tempDir, "metadata.json"), `${JSON.stringify(metadata(profile, id, source, imageId, provenance), null, 2)}\n`, { mode: 0o600 });
     history = transition(history, RunState.Warmup);
     history = transition(history, RunState.Running);
     const samples = [];
     for (let index = 1; index <= plan.repetitions; index += 1) {
       try {
-        const result = await runLoadGenerator(buildLoadGeneratorCommand({ profile, runId: id, runIndex: index }), samples);
+        const result = await runLoadGenerator(buildLoadGeneratorCommand({ profile, runId: id, runIndex: index }), samples, composeEnv);
         const summary = path.join(tempDir, `${profile}-${index}.json`);
         if (!existsSync(summary)) {
           const error = new Error(`load-generator completed without writing summary: ${path.basename(summary)}`);
@@ -246,7 +263,14 @@ export async function runProfile(profile, { dryRun = false, artifactRoot = path.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [profile, ...flags] = process.argv.slice(2);
   try {
-    const result = await runProfile(profile, { dryRun: flags.includes("--dry-run") });
+    let dryRun = false;
+    let candidateImage = null;
+    for (let i = 0; i < flags.length; i++) {
+      if (flags[i] === "--dry-run" && !dryRun) dryRun = true;
+      else if (flags[i] === "--candidate-image" && candidateImage === null && flags[i + 1]) candidateImage = flags[++i];
+      else throw new Error("invalid performance runner arguments");
+    }
+    const result = await runProfile(profile, { dryRun, candidateImage });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
     process.stderr.write(`${error.message}\n`);

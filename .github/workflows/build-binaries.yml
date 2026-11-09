@@ -23,6 +23,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Set up Node.js for release tooling
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.14.0
+
+      - name: Release tooling contracts
+        run: |
+          python3 -m unittest discover -s tests/release_contract
+          node --test tests/performance/contract/runner-contract.test.mjs tests/performance/contract/artifact-audit-contract.test.mjs tests/performance/contract/summary-contract.test.mjs
+
       - name: Install Rust
         run: |
           rustup toolchain install 1.94.0 --profile minimal --component clippy --component rustfmt

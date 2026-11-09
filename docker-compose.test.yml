@@ -27,6 +27,7 @@ services:
 
   edge-perf:
     profiles: ["performance"]
+    image: ${SPONZEY_PERFORMANCE_EDGE_IMAGE:-sponzey-edge-test-edge-perf}
     build:
       context: .
       dockerfile: Dockerfile

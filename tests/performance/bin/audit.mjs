@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateRecordedCandidate } from "./candidate-provenance.mjs";
 
 export function auditArtifact(directory) {
   if (directory.endsWith(".partial")) throw new Error("partial artifact cannot be published evidence");
@@ -13,6 +14,8 @@ export function auditArtifact(directory) {
   const expected = ["Idle", "Readiness", "Warmup", "Running", "Cooldown", "Validating", "Published"];
   if (JSON.stringify(state.history) !== JSON.stringify(expected)) throw new Error("artifact state is not published");
   if (!/^[0-9a-f]{40}$/.test(metadata.source_commit) || !/^sha256:[0-9a-f]{64}$/.test(metadata.edge_image_id)) throw new Error("artifact identity is invalid");
+  if (metadata.measurement_mode === "published_candidate") validateRecordedCandidate(metadata);
+  else if (metadata.measurement_mode !== undefined && metadata.measurement_mode !== "source_build") throw new Error("artifact measurement mode is invalid");
   const host = metadata.host_identity;
   if (!host || ["kernel", "cpu_model", "cpu_governor", "docker_version", "compose_version"].some((key) => typeof host[key] !== "string" || host[key].trim() === "")) {
     throw new Error("artifact host identity is invalid");

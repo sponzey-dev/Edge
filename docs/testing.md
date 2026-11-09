@@ -93,7 +93,7 @@ value may replace it; never use a production credential.
 ## Release Performance Test Environment
 
 `edge-perf`, `node-upstream`, and `load-generator` use the `performance` Compose profile. They are
-not the persistent source-level `edge-test` container: `edge-perf` is rebuilt from the root
+not the persistent source-level `edge-test` container: by default `edge-perf` is rebuilt from the root
 production Dockerfile and k6 receives only the Edge endpoint. The deterministic Node upstream and
 its read-only dashboard make functional failures observable without exposing the Edge Admin API.
 
@@ -107,6 +107,21 @@ Run a real profile only from a clean Git worktree. The runner rejects tracked or
 untracked source changes before it creates an artifact, prepares test PKI,
 builds the image, or changes the performance Compose services; `--dry-run`
 remains side-effect free.
+
+The default source-build profiles are characterization, not evidence that a published image was
+measured. To measure a candidate, first make its immutable `ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:<digest>`
+reference available in the local Docker image store, then run on the intended clean Linux host:
+
+```bash
+node tests/performance/bin/run.mjs baseline --candidate-image 'ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:<digest>'
+node tests/performance/bin/run.mjs soak --candidate-image 'ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:<digest>'
+```
+
+Replace the placeholders with the actual tag and digest. The runner does not pull the image.
+Before service changes it checks the local repo digest and OCI revision/version labels against
+the clean source commit and tag; immediately after startup it compares the container image ID
+before generating load. Metadata records those checks, the config hash and host identity. These
+records do not prove an untrusted operator ran the measurement.
 
 The host-side runner performs this lifecycle: it safely recreates the ignored test PKI runtime,
 builds and waits for the release image, runs k6, samples Edge CPU and memory through the host Docker

@@ -19,6 +19,9 @@ jobs:
   promote:
     name: Promote validated candidate
     runs-on: ubuntu-latest
+    env:
+      PROMOTION_TAG: ${{ inputs.tag }}
+      PROMOTION_EVIDENCE_PATH: ${{ inputs.evidence_path }}
     permissions:
       contents: write
 
@@ -28,8 +31,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install evidence verifier runtime
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22.14.0
+
       - name: Verify evidence path is tracked
-        run: git ls-files --error-unmatch -- "${{ inputs.evidence_path }}"
+        run: git --literal-pathspecs ls-files --error-unmatch -- "$PROMOTION_EVIDENCE_PATH"
 
       - name: Resolve immutable candidate identity
         id: candidate
@@ -37,7 +45,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${{ inputs.tag }}"
+          tag="$PROMOTION_TAG"
+          [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           test "$(gh release view "${tag}" --json isPrerelease --jq '.isPrerelease')" = "true"
           commit="$(git rev-list -n 1 "${tag}")"
           image="$(gh release view "${tag}" --json body --jq '.body' | sed -n 's/^Image: \(ghcr.io\/sponzey-lab\/sponzey-edge:.*@sha256:[0-9a-f]\{64\}\)$/\1/p')"
@@ -45,15 +54,31 @@ jobs:
           echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
           echo "image=${image}" >> "${GITHUB_OUTPUT}"
 
+      - name: Download candidate release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir "$RUNNER_TEMP/sponzey-candidate"
+          gh release download "$PROMOTION_TAG" --dir "$RUNNER_TEMP/sponzey-candidate" \
+            --pattern 'release-manifest.json' --pattern 'SHA256SUMS' \
+            --pattern 'edge-proxy-linux-x86_64.tar.gz' --pattern 'edge-proxy-linux-arm64.tar.gz' \
+            --pattern 'edge-proxy-linux-x86_64.spdx.json' --pattern 'edge-proxy-linux-arm64.spdx.json'
+
       - name: Validate promotion evidence
+        env:
+          PROMOTION_COMMIT: ${{ steps.candidate.outputs.commit }}
+          PROMOTION_IMAGE: ${{ steps.candidate.outputs.image }}
         run: >-
           python3 tools/release/validate_promotion_evidence.py
-          --evidence "${{ inputs.evidence_path }}"
-          --tag "${{ inputs.tag }}"
-          --commit "${{ steps.candidate.outputs.commit }}"
-          --image "${{ steps.candidate.outputs.image }}"
+          --evidence "$PROMOTION_EVIDENCE_PATH"
+          --tag "$PROMOTION_TAG"
+          --commit "$PROMOTION_COMMIT"
+          --image "$PROMOTION_IMAGE"
+          --release-artifacts "$RUNNER_TEMP/sponzey-candidate"
+          --require-tracked
 
       - name: Promote GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "${{ inputs.tag }}" --prerelease=false --latest
+        run: gh release edit "$PROMOTION_TAG" --prerelease=false --latest

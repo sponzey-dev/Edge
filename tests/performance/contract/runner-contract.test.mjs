@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -22,6 +23,53 @@ test("performance runner dry-run neither starts Docker nor publishes artifacts",
   assert.equal(result.dry_run, true);
   assert.equal(result.repetitions, 3);
   assert.equal(result.states.at(-1), "Published");
+});
+
+test("candidate image preflight binds digest, OCI labels, source commit and container image ID", async () => {
+  const { validateCandidateImage } = await import(runner);
+  const commit = "a".repeat(40);
+  const digest = "b".repeat(64);
+  const imageId = `sha256:${"c".repeat(64)}`;
+  const image = `ghcr.io/sponzey-lab/sponzey-edge:v0.1.11@sha256:${digest}`;
+  const inspection = {
+    Id: imageId,
+    RepoDigests: [`ghcr.io/sponzey-lab/sponzey-edge@sha256:${digest}`],
+    Config: { Labels: { "org.opencontainers.image.revision": commit, "org.opencontainers.image.version": "v0.1.11" } },
+  };
+  assert.deepEqual(validateCandidateImage(image, commit, inspection, imageId), {
+    image, image_id: imageId, revision: commit, version: "v0.1.11", container_image_id: imageId,
+    repo_digest: `ghcr.io/sponzey-lab/sponzey-edge@sha256:${digest}`,
+  });
+  assert.throws(() => validateCandidateImage(image, "d".repeat(40), inspection, imageId));
+  assert.throws(() => validateCandidateImage(image, commit, { ...inspection, RepoDigests: [] }, imageId));
+  assert.throws(() => validateCandidateImage(image, commit, inspection, `sha256:${"d".repeat(64)}`));
+  assert.throws(() => validateCandidateImage("ghcr.io/sponzey-lab/sponzey-edge:v0.1.11", commit, inspection, imageId));
+});
+
+test("candidate image dry-run validates the explicit digest without starting a service", () => {
+  const image = `ghcr.io/sponzey-lab/sponzey-edge:v0.1.11@sha256:${"b".repeat(64)}`;
+  const output = execFileSync(process.execPath, [runner, "baseline", "--dry-run", "--candidate-image", image], { cwd: root, encoding: "utf8" });
+  const result = JSON.parse(output);
+  assert.equal(result.candidate_image, image);
+  assert.equal(result.dry_run, true);
+  assert.throws(() => execFileSync(process.execPath, [runner, "baseline", "--dry-run", "--candidate-image", "mutable:latest"], { cwd: root, stdio: "pipe" }));
+});
+
+test("candidate label mismatch fails before artifact, PKI, or compose changes", () => {
+  const temp = mkdtempSync(path.join(os.tmpdir(), "edge-candidate-preflight-"));
+  try {
+    const image = `ghcr.io/sponzey-lab/sponzey-edge:v0.1.11@sha256:${"b".repeat(64)}`;
+    const inspection = { Id: `sha256:${"c".repeat(64)}`, RepoDigests: [`ghcr.io/sponzey-lab/sponzey-edge@sha256:${"b".repeat(64)}`], Config: { Labels: { "org.opencontainers.image.revision": "d".repeat(40), "org.opencontainers.image.version": "v0.1.11" } } };
+    writeFileSync(path.join(temp, "git"), `#!/bin/sh\ncase "$1" in status) exit 0;; rev-parse) printf '%s\\n' '${"a".repeat(40)}';; esac\n`, { mode: 0o755 });
+    writeFileSync(path.join(temp, "docker"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$EDGE_TEST_CALLS"\nprintf '%s\\n' '${JSON.stringify(inspection)}'\n`, { mode: 0o755 });
+    const artifact = path.join(temp, "artifacts");
+    const script = `import { runProfile } from ${JSON.stringify(new URL(`file://${runner}`).href)}; await runProfile('baseline', { candidateImage: ${JSON.stringify(image)}, artifactRoot: ${JSON.stringify(artifact)} });`;
+    assert.throws(() => execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: root, env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, EDGE_TEST_CALLS: path.join(temp, "calls") }, stdio: "pipe" }));
+    const calls = readFileSync(path.join(temp, "calls"), "utf8").trim().split("\n");
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /^image inspect /);
+    assert.equal(existsSync(artifact), false);
+  } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 
 test("performance runner accepts only a clean source status for real profiles", async () => {

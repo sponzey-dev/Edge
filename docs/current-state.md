@@ -1,727 +1,198 @@
 # Current Implementation State
 
-기준일: 2026-09-07
-
-`scripts/` 아래의 로컬 테스트 helper, smoke runner, release evidence collector, memory
-profile wrapper는 삭제되었다. 이 문서에 남아 있는 해당 script 이름은 과거 Phase evidence를
-설명하는 추적 정보이며 현재 실행 가능한 명령으로 해석하지 않는다. 현재 코드 검증의 기본
-출발점은 `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo test --workspace -- --test-threads=1`,
-`python3 tools/release/check_architecture.py --workspace .`, 실제 `edge-proxy` 실행과 필요한
-`python3 tools/release/check_source_indexes.py --workspace .`, 실제 `edge-proxy` 실행과 필요한
-수동/통합 검증이다. Build Binaries workflow의 read-only `Source quality` job은 fmt, clippy,
-workspace test, architecture/source-index fitness와 pinned `cargo-audit`의 `cargo audit`을 모두
-통과시킨 뒤에만 artifact build와 prerelease candidate publish를 시작한다. audit tool install
-또는 advisory DB 접근 실패도 job 실패로 처리한다. A SemVer tag remains a candidate until
-tracked clean-host evidence validates through `promote-release.yml`; this does not reopen certificate
-automation.
-
-The public `v0.0.4` prerelease remains immutable but is rejected from promotion: its image
-manifest lacks the required OCI revision and version labels. It must not be retagged, amended,
-or used as clean-host evidence. The public `v0.0.5` prerelease has a valid identity and C8
-evidence, but its official Compose package has no primary-config mount and therefore cannot
-complete the clean-host deployment matrix. The public `v0.0.6` prerelease adds the missing
-read-only canonical primary-config mount and first-install preservation behavior, but its
-operator documentation omits the required fixed `runtime.env` Compose input. The public `v0.0.7`
-prerelease corrects that command, but its root-only Compose backup override lacks the minimum
-capability required to open the edge-owned data lock after `cap_drop: ALL`. The `v0.1.0` tag is
-immutable but non-releasable: its workflow correctly rejected the tagged version because the
-executable package still declared `0.0.10`, and consequently it has no prerelease artifact or
-published image. The public `v0.1.1` prerelease is also non-releasable: its Linux archives require
-GLIBC_2.39 and cannot run on the supported Ubuntu 22.04 clean host. It remains immutable and must
-not be reused. The immutable `v0.1.2` tag failed before artifact publication because its x86_64
-static-PIE binary did not match an overly narrow `file` output check; it must not be moved or reused.
-The public `v0.1.3` prerelease has a portable static-PIE Linux archive but its Compose offline
-image admission incorrectly expects Docker `image load` to preserve the published OCI index digest;
-it is therefore not eligible for the clean-host upgrade matrix and remains immutable. The public
-`v0.1.5` prerelease has a portable Linux archive and corrects offline image admission, but its
-Compose rollback rejects the journal's valid `sha256:` predecessor digest and its systemd uninstall
-leaves the fixed upgrade helper behind; it is not eligible for promotion.
-The public `v0.1.6` prerelease corrects Compose rollback digest normalization and systemd uninstall
-cleanup, but its systemd helper incorrectly rejects a conventional root-owned `0755` local artifact
-before an offline upgrade; it is not eligible for promotion. The public `v0.1.7` prerelease corrects
-that permission check, but its systemd helper rejects the adapter's explicit version argument before
-offline admission; it is not eligible for promotion. The public `v0.1.8` prerelease corrects the
-explicit-version admission contract and its Linux archive workflow accepts either static or static-PIE
-`file` output before packaging, but the Ubuntu 22.04 clean-host systemd upgrade exposed legacy
-non-zero stop handling, readiness-probe stdout, and listener-startup race defects; it is not eligible
-for promotion. The public `v0.1.9` prerelease (`e1eedc4`) corrects those systemd offline-upgrade
-behaviors. Workflow `34082549484` passed source quality, all six binary builds, anonymous OCI
-pull/label validation, asset assembly, manifest validation, and prerelease publication. Its immutable
-manifest binds Linux amd64 archive `8d8e83c6506c626951a2dc7710825c95c33c1c6cbb8a2c78f01ae376ccefc441`,
-Linux arm64 archive `5f19335d584a9aca8f14a2bb8196ce9d8aa65ab1695bade3040f3f26288b9af7`, and
-`ghcr.io/sponzey-lab/sponzey-edge:v0.1.9@sha256:2c582050611472aae32fbd83509b9fba1d4f8328e69df425244ecd4358a7850c`
-to that commit. On the dedicated Ubuntu 22.04 x86_64 host, the exact public archive passed
-`v0.1.3→v0.1.9` systemd full upgrade, forwarding/readiness, explicit journal recovery rollback,
-preservation, and cleanup; the exact public archive plus pinned OCI image also passed the
-`v0.0.9→v0.1.9` Compose full upgrade and explicit recovery rollback. It remains a prerelease
-candidate: this amd64 matrix does not replace remaining promotion evidence, including fresh
-same-identity long-duration and support evidence required by the active plan. The current product
-candidate scope officially supports Linux amd64 only.
-Its fixed Linux amd64 C8 candidate baseline was also remeasured from the exact `e1eedc4` detached
-checkout. Because the retained historical reference artifact was unavailable on that host, the
-approved `3c1e8e…` reference was recreated there under the same explicit loopback dashboard-port
-override. Both three-run artifacts passed independent audit (553 reference and 552 candidate resource
-samples), and the fail-closed comparator passed: RPS ratio `0.96445704`, p95 ratio `1.09745749`, p99
-ratio `1.09985146`, and error-rate delta `0`. This is C8 evidence for the immutable amd64 candidate,
-not product promotion approval.
-The same exact amd64 candidate completed a fixed-host 30-minute soak as artifact
-`2026-09-07T07-35-03-332Z-2303534`: independent audit accepted 908 resource samples, 15,315.3605
-RPS, p95 `0.86977ms`, p99 `1.012235ms`, zero errors, and memory first/last values of 3,137,339 and
-3,461,349 bytes. The unrelated service occupying dashboard port 3000 remained untouched; the
-performance contract's explicit loopback override used port 3301. This is candidate amd64 soak
-evidence only and does not itself fulfill promotion requirements.
-The v0.1.9 Linux arm64 archive checksum and static AArch64 ELF were independently verified, and
-the archive booted on the local Linux/arm64 Ubuntu 22.04 container runtime. This is an ABI/runtime
-preflight only: the available dedicated Ubuntu host is amd64 and no native Linux arm64 systemd/Compose
-clean host is currently available. Linux arm64 is unverified and unsupported for the current
-amd64-only product candidate; native arm64 deployment validation is deferred to a later plan.
-Its short-lived root override
-uses `DAC_OVERRIDE` plus `FOWNER` only for the exclusive data-lock backup. Its Compose package keeps first installation pinned
-to tag+digest, while an explicitly prepared offline upgrade validates a root-owned tagged image
-archive's OCI version and revision labels before using the admitted local tag; rollback normalizes
-the journal digest and restarts the reverted predecessor through Compose health checks. The
-unpublished v0.0.9 source correctly declared its closing responses but lost enough throughput to
-fail C8; v0.0.10 instead supports
-one-at-a-time plaintext HTTP/1.1 client keep-alive after a fully flushed response, while still
-honoring an explicit client `Connection: close` and preserving TLS close-notify behavior. Its
-source-level contracts do not replace the required
-same-identity clean-host matrix.
-Before a candidate prerelease is assembled, the tag workflow anonymously pulls its exact GHCR
-digest and fails closed unless the inspected OCI revision and version labels equal the tagged
-commit and SemVer tag.
-
-## Performance Test Environment
-
-The separate `tests/performance/` Compose boundary now provides a production
-`edge-perf` release image, deterministic Node upstream, Edge-only k6 profiles,
-host-only CPU/memory samples, fail-closed summary/audit, and a 30-second smoke
-CI gate. Baseline (three independent warmup/measurement runs), stress, and
-30-minute soak remain manual characterization profiles. Their ignored artifacts
-do not replace the canonical Phase 011 7,200-second/platform release gate.
-For C8, new baseline artifacts must capture matching host identity and pass the
-5% median-RPS, 10% p95/p99, and no-error-increase gate described in
-[`release-gate.md`](release-gate.md#support-and-performance-evidence). Artifacts
-created before that host-identity schema remain characterization-only.
-
-이 문서는 Phase 001부터 Phase 011까지 완료된 구현의 현재 기준이다. 상세 과거 계획과 실행
-기록은 `.tasks/phase001/`부터 `.tasks/phase012/`에 보관하며, Phase 010 완료 판정은
-`artifacts/release-evidence/phase010-20260716-final-r2`와
-`docs/mvp-completion-audit.md`를 기준으로 한다. Phase 011 정량 memory/resource safety의
-완료 근거는 `.tasks/phase011/`과 이 문서에 보관한다. 활성 `.tasks/plan.md`는 이후 단일 노드
-운영 제품화 계획이며 아직 완료된 기능을 주장하지 않는다. Task 001~023은 typed policy, global logical payload
-ledger, exact release, restart-required desired/active 분리, resource metrics/logs와 live
-Admin summary까지 완료했다. Task 024~038은 cross-platform harness foundation, canonical
-evidence, HTTP small-load, macOS arm64 1,024-connection capacity/admission, slow header/body timeout과
-cleanup smoke까지 완료했다. Task 039~043은 HTTPS/mTLS idle capacity, WebSocket backpressure,
-50,000 HTTP connection churn plateau와 128 slow-response cleanup을 완료했다. 이후 fixed
-12-scenario macOS arm64/native Linux x86_64 full profile, 7,200초 soak, macOS deep diagnostic과
-final release binding까지 완료했다.
-Production은 process-wide
-`SharedFileAuditLedger`를 사용하며
-재시작 보존, verified startup/reconciliation, authenticated `GET /api/v1/audit`와
-Admin audit viewer를 지원한다. Phase 008에서 암호화 backup,
-crash-recoverable offline restore/replace/recovery, 사설 PKI 인증 행렬과
-backup→restore→fresh startup→Admin 재인증→trusted HTTPS recovery E2E가 구현됐다.
-Phase 008 automatic release marker/snippet contract와 independent evidence validator까지
-통과했다. 외부 Let's Encrypt는 이 완료 판정에 포함하지 않는다.
-Phase 009의 managed private trust bundle CRUD/verified read, strict rustls client
-factory/core transport, production startup preparation과 실제 rustls private-PKI mio
-upstream HTTPS forwarding, strict HTTPS active health probe와 TLS WebSocket tunnel은
-구현되었다. managed private client Root를 사용하는 required inbound mTLS도 listener별
-factory로 구현되었다. config snapshot, health availability, listener별 inbound server factory,
-outbound request/health TLS registry의 generation-atomic apply와 rollback compensation도
-구현되었다. Task 019에서 trust bundle backup/restore schema v2, schema v1 read/restore
-compatibility, trust CA/profile preflight와 fresh restore bidirectional TLS E2E도 구현되었다.
-
-현재 활성 운영 제품화 작업은 fixed-path support bundle을 추가했다. authenticated/CSRF-protected
-`POST /api/v1/support-bundles`와 Admin UI는 fixed allowlist, file/byte/log-age bounds,
-no-follow path checks와 sensitive-content scan을 거친 private tar receipt만 제공한다. API/UI는
-archive filesystem path, PEM, secret, header/cookie/body/query를 노출하지 않는다. Compose/systemd
-offline upgrade helper는 fixed image digest manifest와 checksum-backed backup receipt를 사용하며,
-v0.1.9의 Ubuntu 22.04 amd64 clean-host release evidence (Compose/systemd upgrade 및 recovery)는 완료됐다.
-다만 이것만으로 제품 promotion을 주장하지 않는다. Manual certificate/private PKI만
-지원하며 external Let’s Encrypt/ACME issuance or renewal automation is explicitly deferred until
-the user reopens that scope.
-
-Phase 011 Task 001의 macOS arm64 release mini-run 2회에서 idle과 incomplete idle connection
-100개 RSS는 9~10 MiB 범위였고 관측 증가는 1 MiB 미만이었다. 이는 owner
-inventory와 sampler contract characterization일 뿐이며 Linux profile, HTTP/TLS peak,
-churn/soak 완료를 의미하지 않는다. 권위 계약은
-`docs/memory-resource-baseline.md`와 ADR 011이다.
-
-Task 023 기준 Core는 active revision, logical payload used/limit, active connection count와
-closed pressure state를 deduplicated latest snapshot으로 nonblocking 게시한다. Admin API/UI는
-이 mirror만 읽으며 Core connection table/ledger를 직접 lock하지 않는다. 미게시 상태는
-`null`/`unavailable`이고 값은 process RSS나 per-owner 상세가 아니다.
-
-Task 024는 test/release-only memory harness에 platform-neutral lifecycle과 process/RSS/load/
-clock port, fake-port orchestrator를 추가했다. 이는 실제 OS sampler나 release scenario
-완료 증거가 아니라 Gate C를 위한 deterministic foundation이다.
-
-Task 025는 macOS `ps`와 Linux `/proc` fixture를 checked bytes/start identity로 해석하는
-test-tool adapter, explicit child command supervisor와 current-host child smoke를 추가했다.
-실제 release proxy scenario와 cross-platform approval report는 아직 남아 있다.
-
-Task 026은 source/config/scenario/process identity에 묶인 canonical memory report schema v2,
-atomic writer, SHA-256 digest와 independent tamper/stale validator를 추가했다. Ceiling/plateau
-평가와 release collector 승인은 아직 수행하지 않았다.
-
-Task 027은 absolute ceiling, 5-cycle cooldown plateau와 process/request/connection/payload
-correctness를 함께 판정하는 pure evaluator를 추가했다. 실제 release-process observation은
-아직 이 evaluator에 공급되지 않는다.
-
-Task 028은 release `edge-proxy` PID를 schema v2 evidence CLI로 직접 측정하고 별도 validator
-invocation으로 source/config/scenario identity와 digest를 승인했다. macOS arm64 idle 3 sample은
-모두 9,338,880 bytes였고 missing sample은 0이었다. 이는 short Gate C smoke이며 Linux/full
-load/plateau 승인 결과가 아니다.
-
-Task 029는 test-tool에 immutable loopback target/request bound를 받는 HTTP churn driver와
-Admin live resource status projection parser를 추가했다. 정상 200/Content-Length/body,
-malformed/length mismatch/response limit, request counter 보존과 잘못된 phase 전이를 loopback
-테스트로 검증했다. 실제 release proxy의 HTTP 부하, cooldown cleanup과 RSS evaluator/report
-조합은 다음 태스크에 남아 있다.
-
-Task 030은 release proxy, loopback upstream, attached PID RSS sampler와 Admin status probe를
-하나의 explicit scenario runner로 조합했다. macOS arm64 small smoke는 신규 연결 HTTP 요청
-100개를 모두 성공했고 최종 검증 실행의 peak/5-cycle cooldown RSS는 9,830,400 bytes로 동일했으며 cooldown 뒤
-active connection/logical payload가 모두 0, pressure가 normal이었다. 이는 256 MiB conservative
-smoke ceiling 아래의 small observation이며 source-bound canonical full report, Linux,
-1024/slow/control-plane 및 TLS 계열 합격은 아직 아니다.
-
-Task 031은 기존 idle schema v2를 변경하지 않고 HTTP 전용 canonical evidence schema를
-추가했다. `scripts/smoke_http_memory_scenario.sh`는 current source/config/scenario/process
-identity, request 100/100, ordered RSS/ceiling/plateau, active revision/normal pressure와 cleanup
-0을 report/digest에 atomic publish한 뒤 별도 process로 재검증한다. stale build와 digest를
-다시 계산한 unknown-field report도 거부한다. exact current 값은
-`artifacts/memory-evidence/task030-current/`가 권위 자료이며 이 역시 macOS small profile이다.
-
-Task 032는 별도 test-tool process가 64/256/512/1,024 순서로 incomplete HTTP connection을
-보유하고 정확히 해제하는 상태머신과 actual release smoke를 추가했다. 현재 macOS arm64
-실행에서 holder와 Admin live aggregate가 1,024에서 일치했고 logical payload는 1,024 bytes였다.
-proxy RSS는 hold 시 약 12.2 MiB, release 후 약 12.3 MiB였으며, 종료 뒤 active connection과
-logical payload는 모두 0이고 pressure는 normal이었다. exact source/config-bound report와
-digest는 `artifacts/memory-evidence/task032-current/`를 따른다. Linux, 1,025 admission 거부,
-slow payload, TLS/mTLS와 장기 soak는 아직 완료되지 않았다.
-
-Task 033은 1,024개 connection 유지 중 1,025번째 actual socket이 terminal close로 거부되고
-기존 Admin active count 1,024가 보존되는 것을 검증했다. 같은 실행에서
-`connection/connection_limit` metric 값 1과 bounded Product rejection event 1건을 확인했다.
-기존 holder 해제 후 count/payload 0, 새 1개 connection 재입장, 최종 0/0 cleanup까지
-통과했다. source-bound held report/digest와 요약은
-`artifacts/memory-evidence/task033-current/`에 있다. payload pressure, Linux, TLS/mTLS와
-long soak는 여전히 남아 있다.
-
-Task 034는 현재 Python shim이 `python3 -` stdin code를 실행하지 않고 성공 종료하는 문제를
-발견해 Task 028/031 memory smoke의 readiness와 unknown-field fixture 생성을 `python3 -c`로
-교체했다. HTTP negative gate는 mutated JSON/digest 존재, `"unknown": true`, exact SHA-256
-일치를 먼저 확인한 후 validator rejection을 요구한다. 수정 후 idle evidence와 HTTP 100/100
-actual smoke가 통과했다. 이는 test evidence 신뢰성 수정이며 product 기능 추가는 아니다.
-
-Task 035 actual release smoke는 incomplete header 64개를 production 기본 30초 timeout까지
-유지했다. Hold 중 Admin은 connection 64, logical payload 2,624 bytes를 보고했고 별도 정상
-request는 HTTP 200이었다. Timeout 뒤 slow client 64/64가 408로 종료되고 Admin은
-connection/payload 0/0, normal pressure로 수렴했다. Held peak RSS는 10,043,392 bytes였으며
-report/digest는 `artifacts/memory-evidence/task035-current/`에 있다. Slow body/response,
-TLS/mTLS, Linux와 soak는 남아 있다.
-
-Task 036 actual release smoke는 32개 POST에서 각각 Content-Length 65,536 bytes를
-선언하고 body 32,768 bytes만 전송해 production 30초 timeout까지 유지했다.
-Hold 중 Admin은 connection 32, logical payload 1,051,072 bytes를 보고했고 별도
-정상 request는 HTTP 200이었다. Timeout 뒤 slow client 32/32가 408로 종료되고
-Admin은 connection/payload 0/0, normal pressure로 수렴했다. Held peak RSS는 약 11 MiB였으며
-report/digest는
-`artifacts/memory-evidence/task036-current/`에 있다. Payload exhaustion, response
-backpressure, TLS/mTLS, Linux와 soak는 남아 있다.
-
-Task 037 actual release smoke는 max connection 64와 지원 최소 payload 예산 16 MiB를
-사용했다. 13개 partial body가 logical payload 13,625,040 bytes를 charge해 80%
-임계 13,421,773 bytes를 넘었고 Admin pressure는 `pressured`였다. 추가 connection은
-terminal close로 거부되었고 metric과 bounded Product event는 모두
-`payload/payload_pressure`로 분류했으며 기존 13개는 보존됐다. Holder 13/13이
-408로 종료된 후 Admin은 0/0 normal, 새 request는 200으로 회복했다. Held
-peak RSS는 약 23 MiB였고 증거는 `artifacts/memory-evidence/task037-current/`에
-있다. Normal socket path는 80%에서 read/admission을 중지하며 100% exact-fit/max+1
-hard exhaustion은 pure ledger test가 검증한다. Response/TLS/Linux/soak는 남아 있다.
-
-Task 038은 외부 network/ACME 없이 temporary private Root와 localhost SAN leaf를
-production managed certificate store에 bootstrap 전 배치했다. Production mio/rustls HTTPS는
-trusted correct-SNI request 100/100을 forwarding했고 untrusted Root/wrong SNI 2/2를
-거부했으며 negative 후 trusted request도 200이었다. 최종 Admin은 0/0 normal,
-peak RSS는 약 10.7 MiB였고 증거는 `artifacts/memory-evidence/task038-current/`에
-있다.
-
-Task 039는 test-tool에만 존재하는 rustls client로 64/128/256/512 순서의 handshake를
-완료하고 512개 TLS connection을 idle 상태로 보유했다. Hold 중 Admin은 connection 512,
-logical payload 0, normal pressure를 보고했다. 완료된 TLS session 자체와 kernel socket
-buffer는 byte-exact payload ledger 대상이 아니므로 이 비용은 process RSS 약 16.7 MiB로
-별도 확인했다. 명시적 close-notify/socket shutdown 뒤 Admin은 0/0 normal로 수렴했고
-trusted HTTPS recovery request는 200이었다. 증거는
-`artifacts/memory-evidence/task039-current/`에 있다. mTLS, WebSocket, Linux/soak는 남아 있다.
-
-Task 040은 별도 private client Root와 managed client trust bundle로 required-mTLS
-handshake를 64/128/256 순서로 완료했다. Hold 중 Admin은 256/0 normal이었고 client
-certificate가 없거나 다른 Root가 서명한 두 handshake는 모두 거부되면서 기존 256개는
-보존됐다. exact release 뒤 0/0 normal, trusted client recovery 200, peak RSS 약 14.9 MiB를
-확인했다. 증거는 `artifacts/memory-evidence/task040-current/`에 있으며 client identity,
-certificate/key/path는 포함하지 않는다. Revocation, WebSocket, Linux/soak는 남아 있다.
-
-Task 041은 production `101` WebSocket tunnel 128개에서 masked client frame과 server echo를
-검증한 뒤 읽기를 멈춰 upstream-to-client backpressure를 만들었다. Hold 중 Admin은
-128 connections, 8,504,064 logical payload bytes, normal pressure를 보고했고 peak RSS는 약
-106 MiB였다. 첫 실행에서 pending client output이 있는 terminal tunnel이 cleanup되지 않는
-결함을 발견해 Core cleanup 불변식과 회귀 테스트를 추가했다. 수정 후 exact release 128,
-final 0/0 normal과 HTTP recovery 200을 확인했다. 증거는
-`artifacts/memory-evidence/task041-current/`에 있다. Task 055는 동일 process에서 이
-upgrade/echo/hold/release/cooldown을 한 번 warm-up한 뒤 5회 측정하고 first/last cooldown median plateau를
-검증한다. TLS WebSocket capacity, fragmentation/extensions, Linux/soak는 남아 있다.
-
-Task 056 adds a fail-closed readiness layer above the scenario-specific validators. Its fixed
-12-scenario allowlist distinguishes single-run, three-run, and five-cycle evidence and reports
-missing, stale-source, wrong-kind, and validator-failed blockers in deterministic scenario order.
-It does not convert historical evidence into current-source evidence or replace the underlying
-correctness, cleanup, ceiling, and plateau validators.
-
-Task 057 upgrades slow-header from single-run capacity evidence to a same-process plateau contract.
-`scripts/smoke_slow_header_memory.sh` performs one verified warm-up followed by exactly five measured
-cycles of 256 partial headers. Every cycle requires 256 successful timeout terminals, at least
-10,496 charged bytes, hold-time HTTP 200, final 0/0 normal cleanup, recovery 200, and a 384 MiB peak
-ceiling. `edge-slow-header-cycles` independently validates the source-bound canonical report and the
-`max(16 MiB, first cooldown median / 10)` plateau. This removes only the slow-header evidence-kind
-gap; current-source reruns for the remaining scenarios, Linux, soak, and deep diagnostics remain.
-
-Task 058 adds the fixed execution boundary for those reruns. Ten source-controlled jobs cover the
-twelve readiness scenarios; the steady job supplies the HTTP, HTTPS, and required-mTLS entries from
-one independently inspected three-run aggregate. The runner accepts only a new explicit output
-root, checks every child exit, physical report/digest, SHA-256, and report build identity, then
-atomically publishes the ordered inventory and ready report. Any failed, stale, missing, symlinked,
-or tampered job stops before success publication. The runner contract does not itself satisfy the
-macOS/Linux/soak gates until the full command is actually executed on those hosts.
-
-Task 060 defines the missing long-soak evidence contract without changing the product. A valid
-report contains baseline plus 120 exact 60-second windows over 7,200 seconds, alternating sixty
-1,000-request churn windows and sixty 128-WebSocket lifecycle windows in one process. Every window
-requires liveness, exact correctness, 0/0 normal cleanup, recovery 200, and RSS below 384 MiB. The
-first/last five-window median plateau uses the fixed 16 MiB/10% rule. Unit/fake-clock reports cannot
-be represented as actual two-hour evidence; a later task must run the wall-clock adapter.
-
-Task 042는 10,000개의 신규 HTTP connect/request/response/close를 5회 반복했다. 50,000개
-요청은 모두 200 correctness를 통과했고 각 cycle cooldown에서 Admin connection/payload는
-0/0, pressure는 normal이었다. 반복 macOS arm64 run의 startup/cooldown RSS는 약 9.5 MiB였고
-마지막 cooldown pair는 fixed 16 MiB plateau tolerance 안에 있었다. 정확한 수치는 실행별
-canonical report를 권위로 한다. source/config-bound report와 digest는
-`artifacts/memory-evidence/task042-current/`에 있다. 이 값은 cycle 종료 RSS이며 load 중
-sub-cycle transient peak, throughput, Linux/long-soak를 증명하지 않는다.
-
-Task 043은 receive buffer를 4 KiB로 제한한 128개 client가 response header만 읽고 멈추는
-actual backpressure를 검증했다. Hold 중 Admin은 128 connections, 약 12~13 MiB response bytes와
-normal pressure를 보고했고 RSS는 약 36.4 MiB였다. 첫 실행에서 response 상태의 완전한 client
-close를 무시하는 cleanup 결함을 발견했다. Core는 정상 request-side half-close를 유지하면서
-mio `write_closed`/error에서만 upstream과 connection charge를 terminal release한다. 수정 후
-128 release, 0/0 normal과 recovery 200을 확인했다. 증거는
-`artifacts/memory-evidence/task043-current/`에 있다. Task 054의 same-process five-cycle contract는
-각 cycle의 held/released 128, 최소 8 MiB charge, final 0/0 normal, recovery 200과 first/last
-cooldown median plateau를 요구한다. TLS/Linux/soak는 남아 있다.
-
-Task 054 full regression은 payload-pressure listener test의 test-only readiness race도 드러냈다.
-기존 test가 nonblocking connect 직후 accept를 한 번만 호출해 socket이 accept queue에 도달하기
-전에 metric을 검사할 수 있었다. 제품 admission behavior는 바꾸지 않고 기존 bounded
-10 ms/100-attempt pattern으로 rejection event를 기다리도록 test를 안정화했다.
-
-Task 044는 product binary에 fixture mode를 넣지 않고 test-tool process가 production
-`FileAuditLedger`와 `MetricRegistry`를 함께 소유하도록 구성한다. 준비 단계는 정상 durable append
-경로로 audit 100,000건을 만든 뒤 segment digest manifest를 게시하고, resident 단계는 hash chain을
-재검증한 뒤 metric 16,384 series와 cumulative 12,288 series를 채운다. max+1은
-`series_limit`이어야 한다. 실제 Admin audit/metrics handler를 3회 호출해 audit page 100과 metric
-kind별 500 cap, immutable response를 검증하고 512 MiB RSS ceiling을 적용한다. fixture 재사용은
-manifest와 aggregate segment digest가 일치할 때만 허용한다. 이 결과는 collection/control query
-characterization이며 `edge-proxy` 전체 composition, Linux/plateau/soak 완료 증거가 아니다.
-승인된 macOS arm64 실행의 durable fixture 준비 시간은 537.75초, 디스크 크기는 약 52 MiB였고,
-resident peak RSS는 46,727,168 bytes(약 44.6 MiB)였다. source/manifest/report digest 증거는
-`artifacts/memory-evidence/task044-current/`에 있다.
-
-Task 045는 plaintext HTTP 100 worker가 각각 1,000개의 새 connection을 사용해 정확히
-100,000/100,000 response를 검증했다. 930회 Admin sample에서 max active 100, max logical charge
-18,620 bytes를 관찰했고 종료 후 0/0 normal과 recovery 200이었다. 100-sample load RSS peak는
-10,764,288 bytes로 384 MiB ceiling을 통과했다. 증거는
-`artifacts/memory-evidence/task045-current/`에 있다. 이는 keep-alive/throughput/latency,
-Linux, 3회 independent run이나 long soak 완료 증거가 아니다.
-
-Task 046은 외부 Let's Encrypt 없이 ephemeral private Root/localhost leaf를 process 시작 전에
-생성하고, root를 driver bootstrap에서 한 번 읽어 immutable rustls client config로 100 worker에
-공유했다. exact 50,000/50,000 HTTPS response, wrong-root/wrong-SNI 2/2 rejection과 trusted upstream
-forward 50,000건을 확인했다. 593회 Admin sample의 max active는 101, max logical charge는 27,041
-bytes였고 final 0/0 normal, trusted recovery 200이었다. 100-sample peak RSS 13,320,192 bytes는
-384 MiB ceiling 아래였다. 증거는 `artifacts/memory-evidence/task046-current/`에 있다. 이는
-public CA, mTLS steady, keep-alive 성능, Linux/plateau/soak 완료 증거가 아니다.
-
-Task 047은 별도 client Root와 complete clientAuth chain/key를 startup에서 한 번 읽어 required
-mTLS concurrency 64로 exact 25,000/25,000 response를 처리했다. no-cert/untrusted-client는 2/2
-거부됐고 upstream count는 negative 전후 25,000으로 유지됐다. 335회 Admin sample의 max active는
-64, max charge는 14,069 bytes였으며 final 0/0 normal, authenticated recovery 200이었다. peak RSS
-13,352,960 bytes는 384 MiB 아래였다. 증거는 `artifacts/memory-evidence/task047-current/`에 있다.
-이는 CRL/OCSP, rotation, Linux/plateau/soak 완료 증거가 아니다.
-2026-07-15 Phase 009 Task 001에서 현재 경계를 다시 characterization하고 ADR 009를
-승인했으며, 이후 task 결과는 아래 capability별 상태를 기준으로 판단한다.
-
-## Implemented Product Surface
-
-- Rust/mio 단일 data plane에서 HTTP/1.1과 HTTPS를 처리한다.
-- Host/path route, HTTP-to-HTTPS redirect, WebSocket `101` tunnel을 지원한다.
-- rustls 기반 TLS termination, SNI certificate selection, file-backed manual
-  certificate import와 신규 연결 대상 hot install을 지원한다.
-- service별 deterministic round-robin, active health check, passive transport
-  ejection, safe GET/HEAD one-shot retry, generation-fenced graceful drain을
-  지원한다.
-- config는 parse, normalize, validate, diff, plan, runtime acknowledge, revision
-  commit, audit 순서로 적용하고 실패 시 기존 snapshot을 유지한다.
-- process startup은 revision repository의 `config/current`를 authoritative
-  config로 사용한다. 완전히 빈 repository에서만 `config/current.toml`을 최초
-  seed로 import하며, dangling pointer는 seed fallback 없이 fail closed한다.
-- process mode는 serve와 typed backup/restore maintenance command를 구분한다.
-  serve는 listener 시작 전에 canonical data-directory exclusive advisory lock을
-  획득한다. `backup create`는 offline exclusive lock 아래 실행되며 verify/restore는
-  authenticated bounded maintenance path에서만 동작한다.
-- schema v1/v2 logical manifest, fixed backup limits, zeroizing/redacted sensitive
-  value, backup/restore/rollback/recovery state reducer는 pure domain contract로
-  구현됐다. allowlisted filesystem inventory, canonical SHA-256 manifest/record
-  encoding, age passphrase encryption, owner-only temp/fsync/atomic publish, safe
-  receipt와 create Product log까지 구현됐다. bounded no-follow reader와 `backup verify`가
-  envelope authentication, manifest/record relation, digest, path/order/count/size를 검증하고
-  payload 없는 compatibility report를 출력한다.
-- `backup restore`는 absent new target에 한해 owner-only sibling stage, config/certificate/
-  secret preflight, directory fsync와 atomic rename으로 복원한다. restored startup은
-  repository current를 authoritative source로 사용한다.
-- existing target `--replace`는 owner-only operation journal을 fsync한 뒤 target→rollback,
-  stage→target 순서로 교체하고 각 crash state를 persist한다. `restore-recover`는 journal
-  enum과 실제 target/rollback 검증 결과로 commit cleanup/rollback/abort를 명시 수행한다.
-- Admin API는 setup/login/logout, config lifecycle, Proxy Host CRUD,
-  certificate issue/renew/import/status, upstream health, recent logs, metrics
-  summary와 bounded audit query를 제공한다.
-- Persistent config/proxy/certificate/trust/setup mutation은 durable intent 뒤 effect를
-  실행하고 terminal을 기록한다. Login/logout/lockout은 인증 결과를 바꾸지 않는 bounded
-  security observation이며, degraded audit는 새 persistent mutation만 fail closed한다.
-- Audit segment는 owner-only, hash-linked, bounded storage이며 startup에서 trailing crash
-  residue와 interior corruption을 구분한다. Backup schema v3는 segment를 인증하고 restore
-  publication 뒤 operation/archive-linked provenance를 이어 쓴다.
-- 선택형 static Admin Web UI는 같은 Admin API만 사용하며 Core나 config
-  file을 직접 수정하지 않는다.
-- Product, Field Debug, Development 로그 모드와 bounded nonblocking log/metric
-  handoff를 제공한다.
-- typed 18-family metrics registry, immutable snapshot, loopback-only Prometheus
-  `GET /metrics`, 인증된 `GET /api/v1/metrics`를 제공한다.
-- running core의 logical payload charge/active limit과 connection-limit,
-  payload-pressure, failed-closed admission rejection을 bounded metric으로 제공한다.
-  pending-restart desired limit은 active limit metric에 반영하지 않는다.
-- resource policy startup, pressure 진입/회복, admission rejection을 Product/Field
-  정책으로 분리하며 rejection은 60초 TTL과 8,192 key cap으로 제한한다. 로그 큐 full 또는
-  disconnected는 ledger/admission/cleanup을 변경하지 않는다.
-- headless, Admin TCP/static UI, local self-signed HTTPS, private Root→Intermediate→leaf
-  trust/SNI/validity matrix, Docker Compose,
-  architecture/docs/release smoke가 자동화되어 있다.
-
-## Architecture Invariants
-
-```text
-bin -> adapters -> application -> domain
-bin -> application -> domain
-adapters -> ports
-application -> ports
-domain -> no outer dependency
-```
-
-- `edge-domain`은 mio, rustls, socket, filesystem, DB, HTTP framework, env,
-  logger 구현을 알지 않는다.
-- `edge-core` hot path는 mio readiness와 명시적 connection/TLS/attempt 상태를
-  관리하고 blocking file, DNS, ACME, certificate 작업을 수행하지 않는다.
-- Admin mutation은 application use case와 bounded acknowledged Core command를
-  거친다.
-- 환경 변수는 `apps/edge-proxy/src/bootstrap.rs`에서 시작 시 한 번 읽고
-  typed config/dependency로 전달한다.
-- runtime config, health, drain, metrics state는 숨은 파일이나 process env에
-  기록하지 않는다.
-
-## Verified Safety Properties
-
-- malformed/ambiguous HTTP framing, oversized header/body, slow client/upstream,
-  backend reset, timeout, chunked response와 backpressure 회귀를 검사한다.
-- config/TLS/health activation과 rollback은 실패 시 이전 runtime truth를
-  보존한다.
-- stale health/passive/drain 결과는 revision/generation fence로 거부한다.
-- metric/log/health queue 포화가 mio event loop를 block하지 않는다.
-- metrics listener는 disabled by default, loopback-only, worker 2, queue 16,
-  timeout 5초, request header 8 KiB, response 4 MiB, series 16,384 상한을 가진다.
-- Admin session/CSRF, secret masking, private-key permission과 structured error
-  contract를 검사한다.
-- Admin password verifier는 atomic write되고 Unix에서 temp/final 모두 `0600`으로
-  제한된다.
-- private PKI client는 test Root만 명시적으로 신뢰하며 complete chain과 correct SNI에서
-  mio HTTPS forwarding에 성공한다. unrelated Root, wrong SNI, missing Intermediate,
-  reversed chain, expired/not-yet-valid leaf와 key mismatch는 실패한다.
-- encrypted recovery drill은 source/restored authoritative revision과 certificate identity를
-  비교하고 old session을 fresh context에서 거부한 뒤 새 Admin login 및 trusted HTTPS를
-  검증한다. wrong passphrase는 absent target을 만들지 않는다.
-- schema v2 recovery drill은 retained revision의 inbound/outbound trust ref와 모든 managed
-  trust bundle을 암호화하고, 복구 게시 전 ref/digest/count/CA profile을 다시 검증한다.
-  fresh startup 후 no-cert client는 차단되고 trusted client 요청만 restored Root/SNI로
-  private HTTPS upstream에 전달된다. schema v1 archive는 v2 reader에서도 계속 복구된다.
-
-## External And Infrastructure Deferred
-
-- 외부 Let's Encrypt staging/production 증적과 자동 갱신 운영 검증
-- DNS-01 provider 실연동
-- remote metrics exposure, retention/history/chart, bundled Prometheus/Grafana
-- audit export/remote signing, multi-user RBAC/OIDC
-- weighted/least-connections/sticky balancing, upstream keep-alive pool
-- Docker/Kubernetes discovery, plugin marketplace, multi-node control plane
-- HTTP/2, HTTP/3, gRPC, TCP proxy, WAF, cache/static hosting
-
-## Planned TLS Work Testable With Private PKI
-
-다음 기능은 아직 구현되지 않았지만 외부 인증기관이나 공개 DNS가 필요하지 않다.
-test-only Root/Intermediate와 server/client leaf를 생성하여 loopback에서 자동 검증할 수
-있으므로 명시적 제외가 아니라 후속 개발 범위로 관리한다.
-
-- optional mTLS와 client identity 기반 authorization/revocation policy
-- upstream client certificate를 사용하는 outbound mTLS
-- private wildcard certificate와 exact/wildcard SNI selection
-- ClientHello SNI 기반 TLS passthrough
-- private certificate 교체, 만료 경고, activation/rollback 상태 전이
-
-각 항목은 관련 domain/application contract와 실제 mio/rustls integration test가
-완료되기 전까지 `implemented`로 표시하지 않는다.
-
-2026-07-15 Phase 009 Task 014 기준으로 managed trust CRUD/read, strict rustls
-client factory, prepared core registry/transport/state contract와 production startup
-preparation을 구현했다. startup은 active snapshot의 HTTPS upstream을 deterministic하게
-계획하고 각 managed Root를 verified reader로 한 번만 읽어 immutable registry로 주입한다.
-누락되거나 유효하지 않은 trust는 listener 시작 전에 fail closed한다. 실제 rustls
-private-PKI mio E2E는 Root-only client trust와 complete server chain/correct SNI에서
-200을 확인하며, unrelated Root와 wrong SNI는 HTTP request가 backend application에
-도달하기 전에 502로 종료된다. active health도 같은 typed endpoint/TLS policy와
-prepared managed Root를 사용하며 correct Root/SNI/Host에서 Healthy를 게시하고 wrong
-Root/SNI에서는 plaintext 없이 bounded TLS failure를 게시한다. endpoint뿐 아니라
-Root/SNI/Host 변경도 reconciliation identity를 바꾸어 health counter를 reset한다.
-WebSocket upgrade response와 양방향 tunnel payload도 upstream transport를 통과하고,
-양방향 pending byte 합계에 따라 readable interest를 중단/복구한다. retry request는 새로
-선택된 TLS upstream의 HTTP Host로 다시 구성하면서 original forwarded Host와 upgrade
-headers를 보존한다. Task 018부터 request/health registry는 config snapshot과 같은 acknowledged
-generation에서 교체되며 rejected candidate는 old registry를 유지하고 rollback은 old Root
-behavior를 복원한다.
-required inbound mTLS는 listener의 explicit `client_auth=required`와 managed trust ref를
-startup composition root에서 immutable rustls verifier factory로 준비한다. 동일 ref는 한 번만
-verified-read하며 missing/invalid material은 listener 시작 전에 실패한다. adapter matrix는
-trusted Root/complete clientAuth chain 성공과 no-cert, unrelated Root, missing Intermediate,
-serverAuth-only, expired/not-yet-valid, malformed record 실패를 검증한다. 실제 mio E2E는 실패한
-두 client가 HTTP parser/upstream에 도달하지 않고 trusted client만 forwarding하는 것을 확인한다.
-기존 disabled HTTPS listener는 동일 no-client-auth 경로를 유지한다. listener policy 변경은 현재
-restart-required지만, 정책이 동일한 hot route/upstream apply와 certificate install은 bind별
-prepared server registry를 사용하므로 required mTLS를 no-client-auth로 낮추지 않는다. core
-ack 이후 health activation이 실패하면 command 전에 준비한 previous snapshot/server/client/health
-generation으로 보상하고 mirror/revision은 변경하지 않는다.
-offline backup create는 schema v2를 쓰며 `trust-bundles/<ref>/roots.pem|metadata.toml`만
-allowlist한다. manifest는 roots/metadata 완전 관계와 config trust reference 존재를 검증한다.
-restore는 publication 전에 managed store verified-read와 CA-only validator를 다시 실행한다.
-TLS handshake terminal failure는 core에서 bounded nonblocking observation queue로 전달되고,
-application sampler가 listener/upstream/error key별 60초 첫 Product event만 허용한다. queue가
-포화되어도 event loop는 block하지 않고 기존 drop counter만 증가한다. upstream certificate
-validity는 adapter에 주입한 rustls `TimeProvider`의 고정 시각으로 유효기간 전 실패와 기간 내
-성공을 결정적으로 검증한다. inbound prepared registry는 실제 listener socket lifecycle과
-동일한 validated unique bind로 keying하고, config와 Product log identity는 `ListenerId`를 유지한다.
-
-Let's Encrypt 관련 adapter와 HTTP-01/fake ACME 테스트는 남아 있지만 외부
-인증기관 준비 완료를 의미하지 않는다. 재개 시 `docs/acme-staging.md`의
-승인된 public domain evidence 절차를 별도 수행한다.
-
-## Verification Commands
-
-```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace -- --test-threads=1
-```
-
-동일한 source-level gate는 `docker-compose.test.yml`의 상시 `edge-test` 서비스에서도 실행할
-수 있다. 컨테이너는 source를 `/workspace`에 mount하고 Cargo registry/git/target cache만 named
-volume으로 유지하며 host port, 운영 data와 secret을 mount하지 않는다. 정확한 명령과 lifecycle은
-`docs/testing.md`를 따른다. 컨테이너 통과는 Linux source-level 검증이며 실제 production image,
-Admin API/UI, TLS, backup/restore와 platform별 memory evidence를 대체하지 않는다.
-
-2026-07-15 Phase 009 시작 기준선에는 fmt, clippy warnings-as-errors, 551개 workspace tests,
-architecture/docs gates, Admin Web, Docker Compose, health, encrypted recovery/private-PKI 및 MVP
-smoke가 통과했다. 해당 script 기반 결과는 과거 evidence이며 새 release는 현재 source에서 위
-Cargo 명령과 필요한 runtime 검증을 다시 실행하고 fresh evidence를 수집해야 한다.
-
-## Phase 011 Task 048 Memory Manifest
-
-The test-only `edge-memory-manifest` command collects the exact HTTP, HTTPS, and required-mTLS
-steady profile into one canonical manifest. It accepts one explicit input directory and fixed typed
-arguments. It neither discovers scenario files nor runs load scenarios. The directory must contain
-exactly 12 named report, digest, driver-summary, and terminal-summary files; symlinks, unknown or
-missing names, and noncanonical content fail closed.
-
-Collection verifies current source identity, request arithmetic, 384 MiB candidate ceilings,
-negative TLS counts, upstream forwarding, Admin resource maxima, 0/0 normal cleanup, and recovery
-200 before atomic publication. A separate process revalidates every source file or inspects a copied
-manifest/digest against its source identity. Current macOS arm64 one-run evidence is always
-`partial`; Linux x86_64, three independent repetitions, and long-soak/deep-diagnostic evidence
-remain blockers. No product runtime crate depends on this model.
-
-The Task 048 validation run also exposed a pre-existing mio half-close regression: a client that
-finished an HTTP request with TCP `shutdown(Write)` could still read the response, but a
-`write_closed` readiness flag dropped its in-flight upstream. Client half-close is now preserved
-after request completion; only an actual socket error aborts that upstream phase. The existing
-upstream-read-timeout test is the regression contract and must return 504 rather than 502.
-
-## Phase 011 Task 049 Three-Run Aggregate
-
-The test-only `edge-memory-aggregate` command accepts exactly `run-001`, `run-002`, and `run-003`.
-Each run must contain one exact steady profile and its independently validated Task 048 manifest.
-All three runs bind the same source tree, platform, architecture, and fixed scenario contract, while
-their hashed process-start identity sets must be distinct. Per-run config digests differ because
-fresh ports and temporary paths are mandatory, and each remains child-manifest-bound. Missing,
-extra, symlinked, mixed, or tampered paths fail before atomic output replacement.
-
-For each scenario, the aggregate records peak and cooldown RSS ranges. Both ranges must fit
-`max(16 MiB, minimum peak RSS / 10)`, and every child remains below the fixed 384 MiB ceiling with
-zero correctness and cleanup failures. The aggregate status remains `partial`: Linux x86_64, the
-full Phase 011 scenario profile, and long-soak/deep-diagnostic evidence remain blockers.
-
-Run `scripts/run_three_steady_memory_profiles.sh <new-artifact-root>` only against an absent output
-root. It reruns HTTP 100,000, private-PKI HTTPS 50,000, and required-mTLS 25,000 three times, checks
-that source identity remains unchanged, then invokes separate collect, validate, and inspect
-processes. Generated artifacts are evidence for that exact source identity only. The current
-entrypoints publish only `partial` steady-profile evidence: they do not substitute for the remaining
-full-profile scenarios, native Linux x86_64 evidence, long soak, or deep diagnostics.
-
-## Phase 011 Task 051 Canonical Slow Request Capacity
-
-The earlier 64 slow-header and 32 slow-body runs remain historical characterization. The current
-test-only typed contract fixes 256 partial-header connections and 128 partial-body connections with
-65,536 declared and 32,768 transmitted bytes per body. The canonical scripts verify exact timeout
-terminals, a healthy request during hold, source/config/process identity, RSS ceilings, and final
-0 connection/0 payload/normal pressure.
-
-This task is a capacity step, not the full slow-path plateau claim. Three slow-body cycles,
-five-cycle slow-response/slow-path plateau, Linux, long soak, and deep diagnostics remain separate.
-
-## Phase 011 Task 052/053 Slow-Body Same-Process Plateau
-
-The slow-body script now keeps one release proxy alive across exactly three canonical 128-connection
-load/timeout/cooldown cycles. Every cycle requires exact terminals, at least 4,194,304 charged bytes,
-recovery 200, 0/0 normal cleanup, unchanged process identity, and a 512 MiB ceiling. That Task 052
-run is repeatability evidence, not the formal plateau gate.
-
-Task 053 extends the source-controlled contract to exactly five cycles. `edge-slow-body-cycles`
-computes the median of cooldown cycles 1-2 and 4-5 and requires the latter to remain within
-`max(16 MiB, first median / 10)`. It canonically publishes only after every cycle and the median
-plateau pass. Slow-response/WebSocket cycles, soak, Linux, and deep diagnostics remain uncovered.
-
-## Phase 011 Task 060/061 Long-Soak Boundary
-
-The canonical long-soak contract requires one baseline plus 120 exact 60-second windows in one
-process. Task 061 adds the test-tool-only one-window use case used by that future wall-clock runner.
-It maps baseline/odd/even indices to fixed 0/1,000/128 workloads, calls explicit load, process, and
-runtime ports, and returns an observation only after exact correctness, unchanged process identity,
-positive RSS, 0/0 normal cleanup, and recovery 200. Concrete HTTP, WebSocket, attached-process, and
-Admin adapters remain outside the pure state machine.
-
-This is runner infrastructure, not two-hour evidence. The gate remains incomplete until a single
-release proxy completes all 120 wall-clock windows and the final canonical report validates.
-
-Task 062 adds the fixed wall-clock orchestration and executable composition. Its CLI accepts only
-the attached process/proxy/Admin/identity/output boundary; duration, interval, counts, ceiling, and
-plateau are not runtime options. The shell entrypoint is intentionally thin: it attaches the fixed
-Rust runner to an already isolated release proxy/Admin process and does not create, reconfigure, or
-stop product processes itself. Provide every identity and output explicitly:
-
-```bash
-./scripts/run_diagnostic_soak.sh \
-  --pid <release-proxy-pid> --proxy-address <proxy-ip:port> --admin-address <admin-ip:port> \
-  --host <test-host> --expected-revision <active-revision> \
-  --build-identity <source-identity> --config-sha256 <config-digest> \
-  --output <new-soak-report.json> --digest-output <new-soak-report.sha256>
-```
-
-A completed run remains valid only while its recorded source identity matches the source evaluated
-by the final binding below.
-
-## Phase 011 Final Memory Release Binding
-
-`edge-phase011-memory-release` is a test/release-only evaluator. It recomputes the 12-scenario full
-profile readiness result from the copied inventory, requires `ready=true` with zero blockers, and
-revalidates the canonical 7,200-second/121-observation diagnostic soak. Build identity, platform,
-architecture, report digests, correctness, cleanup, RSS ceiling, and plateau must all agree.
-
-```bash
-./scripts/collect_phase011_memory_release.sh \
-  --build-identity <source-identity> --platform <platform> --architecture <architecture> \
-  --inventory <inventory-v1.json> --inventory-digest <inventory-v1.sha256> \
-  --readiness <readiness-v1.json> --readiness-digest <readiness-v1.sha256> \
-  --soak-report <soak-report.json> --soak-digest <soak-report.sha256> \
-  --output <new-release-report.json> --digest-output <new-release-report.sha256>
-./scripts/check_phase011_memory_release.sh \
-  --build-identity <source-identity> --report <release-report.json> --digest <release-report.sha256>
-```
-
-The output root has exactly nine physical files: copied inventory/readiness/soak reports and their
-digests, the bound release report and digest, and `phase011-memory.log`. Success requires the literal
-`phase 011 quantitative memory and resource safety passed` marker. A prior-source result is
-historical evidence and cannot be relabeled as current. The marker is platform-specific and does
-not remove the separate Linux x86_64 or deep-diagnostic requirements.
-
-The current full-profile registry is fail-closed before execution: its ten scenario shell
-entrypoints are not present in the source tree, so `edge-full-profile-runner plan` terminates before
-printing a runnable plan and no current-source full-profile evidence exists. Restoring those fixed
-entrypoints is separate from the final soak/release wrappers above.
-
-## Phase 011 macOS Deep Diagnostic
-
-Task 068 established a test-only macOS diagnostic path without modifying the shipped binary or host
-security policy. A temporary copy of the current release proxy receives only the
-`com.apple.security.get-task-allow` entitlement. `/usr/bin/leaks` then distinguishes a zero-leak
-fixture from a deliberate positive-leak fixture; the signed copy is deleted and is never published.
-
-Task 069 adds a strict pure parser/evaluator, canonical report, collector, independent validator,
-fixture smoke, and actual proxy runner. The actual runner requires 1,000 successful loopback HTTP
-requests, 0 connections, 0 charged payload bytes, normal pressure, recovery status 200, unchanged
-process identity, tool exit 0, and exactly zero leaked allocations/bytes. Raw tool output is private
-mode 0600 under a mode 0700 evidence directory. The public report and log contain hashes and verdicts,
-not PID, addresses, stacks, temporary paths, or credentials. This closes the macOS reference deep
-diagnostic only after an actual current-source artifact passes
-`scripts/check_macos_leaks_diagnostic.sh`; Linux x86_64 remains a separate requirement.
-
-## Phase 011 Cross-Platform Final Status
-
-Phase 011 완료는 문구가 아니라 current-source artifact로 판정한다. macOS arm64와 native Linux
-x86_64는 각각 fixed 10-job/12-scenario full profile에서 `ready=true`, blocker 0이어야 한다.
-macOS reference는 추가로 7,200초/121-observation soak와 `/usr/bin/leaks` definite leak 0/0을
-통과해야 하며, final collector/checker가 exact 9-file bundle을 byte-for-byte 재생성한다.
-
-권위 artifact root는 `artifacts/memory-evidence/task073-*`이며 상세 경로는 `PROJECT.md` 32절을
-따른다. RSS 결과는 process-level envelope이고 logical payload는 managed owners의 회계 값이다.
-두 수치는 kernel socket memory, 모든 allocator 내부 상태 또는 모든 production workload에서의
-절대 상한을 뜻하지 않는다. 외부 Let's Encrypt 실제 CA 발급은 계속 deferred다.
-
-2026-07-20 accepted checkpoint의 source identity는
-`source-tree-sha256:2c2bcbf580ed60fe18c330340236ecccf0936d7e5a2d18822e1c36f0fb970862`다.
-Native Linux x86_64와 macOS arm64 full profile은 각각 jobs 10/10, scenarios 12/12,
-`ready=true`, blocker 0을 통과했다. readiness digest는 Linux
+검토일: 2026-11-09. 이 문서는 로컬 Git 소스·기준 문서·테스트 정의를 대조한 현황이다.
+이번 문서 정리에서 제품을 실행하거나 전체 테스트·성능 측정·배포 검증을 새로 수행하지 않았다.
+과거 문서의 합격 기록은 아래에 별도 표시하며, 현재 소스의 신규 합격으로 간주하지 않는다.
+
+## 제품 정의와 문서 역할
+
+프로젝트 목적·사용자·장기 방향·현재 제품 범위는 [README](../README.md)와
+[한국어 README](../README.ko.md)가 정의한다. 목표는 작은 MVP에 머무르는 것이 아니라,
+설정 변경·장애 진단·복구를 통제할 수 있는 신뢰할 만한 self-hosted edge gateway다.
+현재 집중 범위는 수동 인증서/private PKI를 사용하는 Linux amd64 단일 노드 제품화다.
+
+이 문서는 구현과 검증 상태를 설명한다. Architecture·config·API·보안·운영의 상세 계약은
+각 전용 문서를 따른다. 프로젝트 목표·단계·완료 기준은
+[프로젝트 계획](../.docs/plans/plan.md)이 소유하고 [문서 지도](../.docs/README.md)에서 연결한다.
+로컬 `.tasks/plan.md`는 개발 실행 계획이며 Git에서 제외되어 있다.
+과거 단계별 task 기록이나 검증 artifact가 모든 checkout 또는 배포 패키지에 포함된다고
+가정하지 않는다.
+
+## 확인한 소스 기준
+
+| 기준 | 로컬 확인 결과 | 해석 |
+| --- | --- | --- |
+| 작업 checkout·계획 기준 | `main`, `abc7f95` | 2026-11-09 사용자 결정. 작성 중인 문서를 보존하여 실제 작업 브랜치도 `main`으로 전환 |
+| 실행 패키지 | `apps/edge-proxy/Cargo.toml`, version `0.1.9` | 이후 후보의 tag와 일치하도록 변경·검증해야 함 |
+| 로컬 `v0.1.10` tag | `abc7f95` | Tag 존재를 확인. 해당 소스의 package version은 `0.1.9` |
+| 릴리스 metadata 계약 | Tag 버전과 package version의 정확한 일치를 요구 | `v0.1.10`은 `RELEASE_VERSION_MISMATCH` 조건에 해당 |
+
+활성 제품 문서와 프로젝트 계획의 소스 기준은 모두 `main`이다.
+이전 브랜치의 문서 편집은 `main`의 운영·릴리스 계약을 보존해 통합했다. Tag는 이동하지 않았다.
+원격 GitHub Actions 결과, registry 가용성, release promotion은 이번에 조회하지 않았다.
+따라서 tag/commit/push와 배포판 발행, clean-host 검증, 정식 제품 승격은 각각 구분한다.
+기존 tag를 옮기거나 과거 검증을 새 identity로 바꾸는 것은 해결 방법으로 간주하지 않는다.
+
+## 소스에 구현된 제품 기능
+
+다음 표의 공통 기능은 현재 checkout의 production 구성과 관련 테스트에서 확인했다.
+구현·회귀 테스트 존재를 현재 실행 성공이나 전체 지원 환경의 합격으로 표현하지 않는다.
+
+| 영역 | 구현 범위 | 상세 계약 |
+| --- | --- | --- |
+| Data plane | 단일 mio HTTP/1.1·HTTPS runtime, Host/exact/prefix routing, HTTP→HTTPS redirect, forwarded/hop-by-hop header 처리, chunked response, timeout·backpressure, WebSocket tunnel | [Architecture](architecture.md), [config schema](config-schema.md) |
+| Upstream 가용성 | 다중 upstream, deterministic round-robin, active HTTP/HTTPS health, passive transport ejection, generation-fenced drain, 조건부 GET/HEAD 1회 retry, 502/503/504 오류 구분 | [Failure-aware routing](failure-aware-routing.md), [upstream health](upstream-health-architecture.md) |
+| TLS·신뢰 | 수동/file-backed certificate, SNI 선택, 신규 연결 대상 hot install, managed Root trust를 쓰는 strict upstream HTTPS, required inbound mTLS | [Private PKI](private-pki-testing.md), [ADR 009](adr/009-private-pki-bidirectional-trust.md) |
+| 설정 lifecycle | parse→normalize→validate→diff→plan→acknowledged apply→revision commit→audit, immutable generation activation, rollback·실패 보상 | [Config schema](config-schema.md), [Admin API](admin-api.md) |
+| 관리 | 최초 setup, login/logout, session·CSRF, Proxy Host CRUD, config·certificate/trust 관리, health·log·metric·audit 조회, API client인 선택형 static UI | [Admin API](admin-api.md), [headless 운영](admin-curl.md) |
+| 관측·자원 | Product/Field Debug/Development 로그, bounded nonblocking log/metric/health queue, loopback Prometheus, Admin resource summary, connection·logical payload admission | [Observability](observability.md), [resource baseline](memory-resource-baseline.md) |
+| Audit | process-wide file-backed typed ledger, intent-before-effect, startup 검증·reconciliation, bounded query, 손상 시 persistent mutation fail-closed | [ADR 010](adr/010-durable-audit-ledger.md), [threat model](threat-model.md) |
+| 복구 | age 암호화 offline backup·verify, fresh restore, journal 기반 replace/recovery, schema v3 trust/audit 보존과 v1/v2 read/restore 호환 | [Backup/restore](backup-restore.md), [deployment](deployment.md) |
+| 운영 패키징 | Compose·systemd helper, journal 기반 offline upgrade/rollback, loopback live/ready probe, bounded SIGTERM drain, authenticated/CSRF-protected fixed-path support bundle | [Install](install.md), [deployment](deployment.md), [troubleshooting](troubleshooting.md) |
+
+### 반드시 유지할 운영 계약
+
+- Core는 UI 없이 동작한다. UI는 `/api/v1` client이며 runtime table이나 config file을
+  직접 수정하지 않는다. Layered/Clean Architecture·Tidy First·TDD 규칙은
+  [AGENTS.md](../AGENTS.md)가 소유한다.
+- 환경 변수는 bootstrap에서 한 번 읽고 typed argument/dependency로 전달한다.
+  실행 중 변경은 validation/apply 경로를 통한다.
+- File parser는 지원 필드를 제한한 TOML-like subset이며 완전한 TOML parser가 아니다.
+  Unknown field는 validator가 거부한다.
+- `config/current` revision pointer가 startup의 기준이다. 비어 있는 repository만
+  primary TOML을 seed로 가져오며, 손상된 pointer를 seed fallback으로 숨기지 않는다.
+- Config·inbound/outbound TLS·health는 준비된 generation을 bounded command/ack로 활성화한다.
+  실패 시 기존 runtime truth와 revision을 보존한다. Listener policy·resource limit의
+  restart-required 변경은 즉시 적용되는 변경과 구분한다.
+- HTTPS upstream의 connect address는 literal IP이고, Root trust·TLS server name·HTTP Host는
+  명시한다. OS Root나 plaintext fallback, request-path blocking DNS를 가정하지 않는다.
+- Logical payload ledger와 process RSS는 다르다. Payload limit을 전체 process memory의 절대
+  상한으로 해석하지 않는다. Cleanup·RSS plateau·ceiling은 실제 workload별로 확인한다.
+- Backup은 offline exclusive data lock 아래 수행한다. Session·CSRF·connection·runtime health·
+  drain counter·metrics는 일시 상태이며 backup에서 복원하지 않는다.
+- Support bundle은 bounded 진단 자료다. Backup을 대체하지 않으며 API/UI에 filesystem path,
+  key·secret·header·cookie·body·query를 반환하지 않는다.
+- Local audit hash chain은 손상 탐지 수단이다. 악의적 host 관리자에 대한 위변조 불가능성이나
+  부인 방지를 보장하지 않는다.
+
+### 현재 main의 안정화와 검증 도구
+
+검토한 `main`에는 plaintext HTTP/1.1 순차 keep-alive, close/half-close·timeout 처리 보완,
+module 분리와 mutation/fuzz regression, source-quality/architecture/index/dependency audit gate,
+portable Linux archive, OCI version/revision identity 검증과 candidate promotion validator가 있다.
+이 구현을 재사용하며 모듈 분리나 기존 안정화를 미구현 기능으로 다시 계획하지 않는다.
+
+재사용하는 `docker-compose.test.yml`의 `nextcloud-e2e` profile과
+`tests/integration/nextcloud/`도 현재 소스에 있다. Edge를 통한 Nextcloud loopback 접속,
+영속 volume과 `127.0.0.1:18080` redirect 설정을 포함한다.
+기존 대화의 접속/로그 확인은 현재 문서 검토에서 새로 수행한 로그인 E2E가 아니다.
+현재 `verify.mjs`는 루트의 HEAD 302/Location만 확인한다. 실제 로그인·세션·파일 요청은
+그 검사만으로 검증되었다고 볼 수 없어 프로젝트 목표 G03에서 보완한다.
+
+## 검증 상태와 증거의 한계
+
+### 현재 사용할 수 있는 검증 경계
+
+- Rust workspace에 domain/application/adapter와 실제 mio/rustls 회귀 테스트가 있다.
+  `tests/integration/`의 이름만으로 전체 제품 E2E를 의미하지 않으며 실제 테스트 내용을 본다.
+- 현재 checkout의 `docker-compose.test.yml`은 상시 `edge-test`와 분리된 performance profile을
+  제공한다. `edge-perf` production image → Node.js upstream 경로에 별도 k6가 부하를 보낸다.
+  부하 생성은 upstream 앱과 분리되어 있다.
+- `tests/performance/`는 smoke·baseline·stress·30분 soak와 host-side CPU/memory sample,
+  fail-closed artifact audit를 제공한다. 결과는 ignored `artifacts/performance/`에 보관한다.
+- 현재 checkout의 performance workflow는 contract와 짧은 smoke를 자동 실행하도록 정의되어 있다.
+  긴 profile의 정의나 CI 파일의 존재만으로 실제 통과를 주장하지 않는다.
+- 현재 소스에는 source-quality gate, 동일 host/source identity 비교와 C8 regression comparator,
+  clean-host release evidence를 검사하는 별도 promotion workflow가 있다.
+  다만 validator의 `passed` 상태 검사가 원본 성능·soak 증거 검증을 대신하지는 않는다.
+
+기존 실행 안내는 [testing guide](testing.md), [release gate](release-gate.md),
+[release evidence template](release-evidence-template.md)에 보존한다.
+현재 `scripts/`의 memory helper와 `tools/release/`의 architecture/source-index 검사를 재사용한다.
+삭제된 과거 helper와 현재 파일을 구분하고, 역사적 script 이름만으로 실행 가능하다고 간주하지 않는다.
+Source quality workflow는 `python3 tools/release/check_architecture.py --workspace .`와
+`cargo audit`을 포함한다. Performance runner의 기본 local build는 characterization이며,
+공개 후보 측정은 명시적 digest와 실행 이미지 확인이 필요하다. 실제 후보의 C8/soak
+원본과 clean-host 검증은 후속 목표에서 확보해야 한다.
+
+### 보존하는 과거 checkpoint
+
+아래는 기존 문서의 승인 기록이다. 이번 작업에서는 ignored raw artifact를 재검증하지 않았다.
+이 기록을 현재 변경된 tree 또는 새 release의 승격 증거로 재사용하지 않는다.
+
+| Checkpoint | 기록된 결과와 source identity | 추적 위치 |
+| --- | --- | --- |
+| Phase 010, 2026-07-16 | Durable audit·backup v3 완료. `source-tree-sha256:000b23c310bae98a40e7689139fab45e09300d83d4daee42bc51763d825c1a85` | `artifacts/release-evidence/phase010-20260716-final-r2`, [completion audit](mvp-completion-audit.md) |
+| Phase 011, 2026-07-20 | macOS arm64/native Linux x86_64 각각 10 jobs·12 scenarios, ready=true·blocker 0. `source-tree-sha256:2c2bcbf580ed60fe18c330340236ecccf0936d7e5a2d18822e1c36f0fb970862` | [Memory contract](memory-resource-baseline.md), [completion audit](mvp-completion-audit.md) |
+| Phase 011 soak·diagnostic | 7,200초·121 observations, churn 60,000·WebSocket lifecycle 7,680, correctness/cleanup failure 0; macOS diagnostic definite leak 0건/0 bytes | 아래 artifact 목록·binding |
+| v0.1.9 후보, main의 2026-09-07 기록 | `e1eedc4`의 Ubuntu 22.04 amd64 Compose/systemd upgrade·explicit rollback·보존, C8 baseline, 30분 soak 기록 | 해당 `main` source의 현황 문서와 로컬 실행 계획. 현재 tree나 v0.1.10의 합격을 뜻하지 않음 |
+
+### 과거 release identity와 제한
+
+다음은 이전 main 문서에 기록된 이력이며 이번 검토에서 GitHub 또는 원본 artifact를 다시
+조회한 결과가 아니다. 과거 tag를 이동하거나 이 기록만으로 새 후보를 승격하지 않는다.
+
+| Tag | 당시 상태 | Commit | Workflow | 알려진 제한 또는 검증 범위 |
+| --- | --- | --- | --- | --- |
+| `v0.1.0` | `non-releasable` | — | — | package version 불일치로 발행 전 거부됨 |
+| `v0.1.8` | `not-promotable` | — | — | systemd upgrade에서 stop/readiness/startup 문제가 발견됨 |
+| `v0.1.9` | `prerelease` | `e1eedc4` | `34082549484` | 소스·artifact 생성과 아래 amd64 upgrade 경로가 기록됨. 제품 승격을 뜻하지 않음 |
+
+`v0.1.9`의 기존 기록은 `v0.1.3→v0.1.9` systemd upgrade와
+`v0.0.9→v0.1.9` Compose upgrade 및 각각의 rollback을 다룬다. 이후 기존 task252는 해당
+archive의 support bundle 생성 실패를 발견했으므로 이 과거 upgrade 기록을 전체 제품 검증으로
+해석하지 않는다.
+
+Phase 011의 상세 artifact root는 다음과 같다.
+
+- `artifacts/memory-evidence/task073-full-linux-x86_64-r1`
+- `artifacts/memory-evidence/task073-full-macos-arm64-r1`
+- `artifacts/memory-evidence/task073-diagnostic-soak-macos-arm64-r1`
+- `artifacts/memory-evidence/task073-macos-leaks-arm64-r1`
+- `artifacts/memory-evidence/task073-phase011-memory-release-macos-arm64-r1`
+
+기록된 readiness digest는 Linux
 `73cb85a4759b952969320651337106a854dc101c2c146e6f7f0468915a085f66`, macOS
 `79162c859929ace3c7d82828639d0a71b3948624ba4c54fb108ee476409853d4`다.
+Soak peak RSS는 9,633,792 bytes, first/last median은 9,043,968/9,011,200 bytes다.
+Exact nine-file binding digest는
+`78d453e0568c069e68c5e563535f2f2497ab42b80d765845a5568bacb7cbcf09`다.
+이 값은 명시된 source·OS·architecture·workload에만 적용된다.
 
-같은 checkpoint의 macOS soak는 7,200초/121 observations, HTTP churn 60,000,
-WebSocket lifecycle 7,680, correctness/cleanup failure 0, peak RSS 9,633,792 bytes와 plateau
-통과를 기록했다. macOS deep diagnostic은 1,000/1,000 HTTP, cleanup 0/0/normal, recovery 200,
-definite leak 0건/0 bytes다. Exact nine-file final binding digest는
-`78d453e0568c069e68c5e563535f2f2497ab42b80d765845a5568bacb7cbcf09`이며 독립 checker가
-승인했다.
+### 제품화 완료로 판단하려면 남아 있는 조건
 
-최종 profile 과정에서 발견한 WebSocket consumed write history는 Task 074에서 수정했다.
-Complete drain은 pending length를 0으로 만들면서 allocation capacity를 재사용하고, partial drain은
-남은 tail을 유지한다. Task 075의 30초 loopback fixture timeout은 macOS endpoint security의 최초
-연결 지연을 위한 test-only 상한이다. 제품 timeout과 release threshold는 바뀌지 않았다.
+구현 기반과 과거 단계 검증은 있으나 현재 소스 전체를 정식 제품으로 검증 완료했다고
+선언할 근거는 이번 검토에서 확인하지 않았다. 남은 조건은 다음과 같다.
 
-이 절은 승인된 checkpoint를 기록한다. 이후 tracked source 또는 문서 변경은 checkpoint artifact를
-새 tree의 release evidence로 자동 승격하지 않으며, 정식 release 후보에는 해당 identity로 full
-profile, soak, diagnostic과 binding을 다시 생성해야 한다.
+- Source branch·package version·tag·archive checksum·SBOM·OCI digest/labels가 같은 후보를
+  가리켜야 한다. 현재 확인된 v0.1.10 버전 불일치를 이 상태와 구분해 해결해야 한다.
+- 같은 후보 identity에서 source/security gate, Linux amd64 Compose/systemd clean-host
+  설치·restart·SIGTERM·upgrade·forced rollback·config/certificate/audit/data 보존을 입증해야 한다.
+- 같은 host/config의 baseline 비교, 해당 후보의 soak·resource cleanup, support-bundle 운영
+  흐름이 유효한 evidence로 연결되어야 한다. 짧은 performance smoke나 과거 Phase 완료만으로
+  이 조건을 충족했다고 보지 않는다.
+- 배포 문서·실제 실행 도구·지원 platform 표현이 선택한 소스와 일치해야 한다.
+  ARM artifact 생성이나 macOS 개발 테스트를 Linux arm64 공식 운영 지원으로 해석하지 않는다.
+
+이 조건은 [프로젝트 계획](../.docs/plans/plan.md)의 G01~G07에 연결했다.
+계획 작성과 문서 통합은 제품 구현·실행 검증·추가 release 완료를 뜻하지 않는다.
+
+## 현재 제공하지 않는 범위
+
+- Let's Encrypt·ACME·HTTP-01/DNS-01·자동 발급/갱신: 사용자가 명시적으로 재개하기 전까지
+  신규 작업·설정·외부 검증을 진행하지 않는다. 기존 adapter와 fake ACME/HTTP-01 테스트는
+  외부 CA 발급 완료 증거나 운영 지원 경로가 아니다.
+- Linux arm64 공식 운영 지원과 native clean-host matrix는 후속 범위다.
+  macOS·Windows build artifact도 제품 운영 지원 선언이 아니다.
+- HTTP/2·HTTP/3·gRPC·TCP proxy, Kubernetes/discovery, multi-node control, WAF,
+  cache/static hosting, weighted/least-connections/sticky balancing, upstream keep-alive pool,
+  plugin marketplace는 현재 제품화 범위에 포함하지 않는다.
+- Optional/client-identity authorization·revocation, client-certificate outbound mTLS,
+  TLS passthrough는 현재 구현 기능이 아니다. 사설 PKI로 테스트할 수 있다는 사실만으로
+  다음 개발 대상으로 확정하지 않는다.
+- Remote metrics retention·audit export/signing·multi-user RBAC/OIDC, 유료 edition·가격과
+  hosted control plane은 이번 정의에서 구현 또는 제공 약속으로 확정하지 않는다.
+
+제품·구현·검증 상태를 분리해 읽기 위해 초기 거대 구상 문서는 README로 통합하고,
+비교 조사와 중복된 완료/미완료 진행 서술은 정리한다. 상세 ADR, API/config 계약, 운영 문서와
+과거 완료 audit는 각자의 근거를 보존하므로 유지한다.

@@ -6,6 +6,8 @@ or mutate the product runtime.
 
 | Path | Responsibility | Boundary / Side effects |
 | --- | --- | --- |
+| `test_candidate_archive.py` | Checks candidate archive identity, checksum and executable lookup. | Uses temporary synthetic assets; no published release is validated. |
+| `test_source_quality_collector.py` | Checks source preflight, command capture and integration with v2 inspection. | Uses temporary directories, fake quality commands and a bounded non-product subprocess. |
 | `test_architecture_fitness.py` | Verifies the executable product-layer fitness gate and its workflow ordering. | Invokes the checker against temporary fixtures or the repository; does not alter product data. |
 | `test_build_workflow.py` | Verifies read-only source-quality (including bounded HTTP-framing mutation smoke), pinned build, artifact, and public-release workflow contracts. | Reads workflow and test-container source only. |
 | `test_compose_packaging.py` | Verifies Compose package contents and runtime deployment contract. | Reads packaging source only. |
@@ -17,6 +19,7 @@ or mutate the product runtime.
 | `test_release_assembly.py` | Verifies deterministic release-asset assembly contracts. | Uses isolated temporary artifact fixtures. |
 | `test_release_manifest.py` | Verifies release-manifest validation contracts. | Uses isolated temporary artifact fixtures. |
 | `test_release_metadata.py` | Verifies tag, repository, and package metadata validation. | Reads repository metadata only. |
-| `test_release_promotion.py` | Verifies prerelease candidate, Linux amd64-only matrix, and evidence-validated product-promotion contracts. | Uses isolated JSON evidence fixtures and reads workflow/document source only. |
+| `test_release_promotion.py` | Verifies historical ineligibility, digest-bound originals, identity/matrix/path rejection, tracked evidence, and candidate-promotion workflow contracts. | Uses isolated JSON evidence fixtures and temporary Git repositories only. |
+| `promotion_performance_fixture.mjs` | Generates test-only raw baseline and soak profiles using the existing summary functions. | Writes only to the supplied temporary fixture directory; never produces actual release evidence. |
 | `test_systemd_packaging.py` | Verifies systemd package contents and operational script contracts. | Reads packaging source only. |
 | `test_upgrade_helper_packaging.py` | Verifies shared upgrade-helper packaging contracts. | Reads packaging source only. |

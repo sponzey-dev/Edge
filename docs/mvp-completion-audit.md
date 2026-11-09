@@ -1,5 +1,11 @@
 # MVP Completion Audit
 
+> Historical evidence record, retained for traceability. Phase completion applies
+> only to the recorded source identities and workloads; it is not current product
+> release approval. Some named helper scripts are absent from the current checkout.
+> Use [current state](current-state.md) for present implementation/evidence limits
+> and [testing](testing.md) for existing verification entry points.
+
 Audit date: 2026-07-21  
 Status: Phase 011 implementation and its 2026-07-20 cross-platform checkpoint are complete. External Let's Encrypt remains explicitly deferred.
 

@@ -1,12 +1,15 @@
 # Multi-Upstream And Active Health Architecture
 
-Status: Phase 005 implemented runtime architecture
+Status: Implemented Phase 005 architecture and decision record
 
 Date: 2026-07-13
 
 Scope: multiple HTTP upstreams, round-robin selection, active HTTP health checks
 
-Deferred: retry, passive health, weighted balancing, keep-alive pool, Prometheus export, external ACME
+Later phases implemented retry, passive health, HTTPS probes, and Prometheus export.
+The Phase 005 baseline below records the original design; current implemented/deferred
+scope is in [current state](current-state.md) and retry/drain contracts are in
+[failure-aware routing](failure-aware-routing.md).
 
 ## Current Production Baseline
 
@@ -176,7 +179,9 @@ metrics, and runtime publication consume.
 
 ## Architecture Fitness Gates
 
-`scripts/check_architecture.sh` rejects:
+The historical `scripts/check_architecture.sh` enforced the following invariants.
+Use [current state](current-state.md) and [testing](testing.md) to identify the
+verification tools actually present in the selected checkout:
 
 - concrete network, filesystem, environment, clock/sleep, HTTP client, or logger use in domain/application;
 - health probe connect/read/write/sleep inside the mio event-loop module;
@@ -200,7 +205,8 @@ Existing Phase 004 TLS/rustls boundary checks remain mandatory.
 
 ## Deferred Scope
 
-Retry, passive health, weighted balancing, upstream keep-alive pooling, hostname resolution, metrics
-export, and external Let's Encrypt staging remain outside this phase. Unified mio HTTP/HTTPS state
+Retry, passive health, and metrics export were outside Phase 005 and were implemented later.
+Weighted balancing, upstream keep-alive pooling, hostname resolution, and external Let's Encrypt
+automation are not current features. Unified mio HTTP/HTTPS state
 handling, deterministic round-robin, active health filtering, and the read-only operational health API
 are implemented and are not deferred items.

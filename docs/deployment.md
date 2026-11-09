@@ -311,9 +311,8 @@ import or set the current config revision.
   certificate file writes preserve the previous certificate; failed hot install
   preserves the previous TLS runtime snapshot. SNI domain conflicts are rejected
   before the core command is sent. Unified mio TLS connection-state integration
-  is implemented; remaining TLS hardening items are tracked separately from the
-  deferred external Let's Encrypt staging workflow in
-  `docs/tls-runtime-next.md`.
+  is implemented. The runtime boundary is in `docs/architecture.md`; current
+  capabilities and deferred TLS extensions are in `docs/current-state.md`.
 - Admin API status, health, upstream-health, metrics, setup/login/logout, config
   get/validate/diff/apply/rollback, proxy host CRUD, manual certificate import,
   support bundle creation, file-backed certificate status, and recent log
@@ -369,12 +368,12 @@ environment settings, or reuse a stale report to force a pass.
 
 ## Verified MVP Baseline
 
-The completed plans are archived through `.tasks/phase007/`. A deployment
-candidate is acceptable only when the following checks pass on that candidate;
-archived success is historical evidence, not a waiver. The old `scripts/`
-test helpers have been removed, so current verification must use Cargo,
-direct `edge-proxy` execution, Docker Compose, Admin API calls, and explicit
-manual evidence rather than deleted script wrappers:
+Historical phase plans and evidence apply only to their recorded source identities.
+A deployment candidate is acceptable only when the following checks pass on that candidate;
+archived success is historical evidence, not a waiver. Current `main` verification
+uses Cargo, the architecture/source-index gates, the existing test/release helpers,
+direct `edge-proxy` execution, Docker Compose, and Admin API calls. Historical
+removed wrapper names are not substitutes for tools present in this source:
 
 - config file startup validates before listener bind
 - bound Admin API HTTP server can apply and rollback revisions

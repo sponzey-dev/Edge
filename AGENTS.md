@@ -1056,3 +1056,28 @@ correctness
   -> performance
   -> feature count
 ```
+
+## 17. 현재 계획·문서·실행 자원 관리
+
+- 2026-11-09 사용자 결정에 따라 활성 제품 문서와 프로젝트 계획의 구현 기준은 `main`이다.
+  다른 branch나 과거 tag의 결과를 현재 source의 구현·검증 완료로 표시하지 않는다.
+- 루트 README로 제품 정의를 확인하고 [문서 지도](.docs/README.md)를 통해 기준 문서를 찾는다.
+  프로젝트 목표·단계·완료 기준은 [.docs/plans/plan.md](.docs/plans/plan.md), 실제 구현·과거
+  증거 현황은 [docs/current-state.md](docs/current-state.md)가 소유한다.
+  기존 `docs/`의 상세 API/config·설계·보안·운영 계약은 경로와 유효한 내용을 재사용한다.
+- 로컬 `.tasks/`는 실행 task·진행 기록이다. 프로젝트 계획 수립만으로 초기화하거나 task를
+  생성하지 않는다. 실행 작업은 프로젝트 계획의 G-ID와 인수 기준을 연결한다.
+- 검증은 선택한 source·실제 존재하는 도구·입력·환경과 결합한다. 필수 검사 FAIL/NOT RUN을
+  완료로 바꾸지 않으며, 유효한 동일 조건의 결과를 이유 없이 반복 측정하지 않는다.
+  Release 입력이 바뀌어 source identity가 달라지면 기존 artifact를 새 후보로 재표시하지 않는다.
+- 테스트는 기존 `docker-compose.test.yml`의 source/performance/Nextcloud profile과 cache·
+  named volume을 목적에 맞게 재사용한다. 새 환경이 필요하면 기존 자원이 맞지 않는 이유를
+  기록하고, 관계없는 container·volume·사용 중인 data를 삭제·초기화하지 않는다.
+- 프로젝트 실행 파일을 갱신할 때 platform/architecture/channel별 공식 current 경로와
+  source·version·checksum/digest를 먼저 식별한다. 별도 stage에서 새 파일을 검증한 뒤 current를
+  전환하고 실제 참조·readiness를 확인한다. 검증 실패 시 기존 정상 실행본을 먼저 삭제하지 않는다.
+- 교체 뒤 불필요한 중복 실행 파일·임시 산출물을 정리하고 참조와 정리 결과를 검증한다.
+  기존 rollback journal이 요구하는 predecessor·backup, 운영 data, immutable public release와
+  보존 evidence는 이 정리 대상이 아니다. 보존 사유·해소 조건을 명시하고 recovery 계약이 끝난
+  뒤에만 해당 계약에 따라 정리한다. 상세 경계는 [자원 관리](.docs/architecture/system.md)를 따른다.
+- 문서·계획 작성 완료를 코드 구현·컨테이너 기동·배포·제품 승격 완료로 보고하지 않는다.

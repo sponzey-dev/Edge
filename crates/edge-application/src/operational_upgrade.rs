@@ -404,6 +404,7 @@ mod tests {
         OfflineUpgradeRequest {
             target_version: "v1.2.3".into(),
             image_digest: "a".repeat(64),
+            release_manifest_file: Some("/root/release-manifest.json".into()),
             artifact_file: "/root/edge-proxy-1.2.3".into(),
             passphrase_file: "/secure/p".into(),
         }

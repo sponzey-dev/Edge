@@ -58,7 +58,7 @@ class CandidateArchiveTest(unittest.TestCase):
             for filename in (name, sbom):
                 checksums.append(f"{hashlib.sha256((root / filename).read_bytes()).hexdigest()}  {filename}\n")
         (root / "SHA256SUMS").write_text("".join(checksums))
-        (root / "release-manifest.json").write_text(json.dumps({"schema_version": 1, "tag": TAG, "commit": COMMIT, "image": IMAGE, "artifacts": entries}))
+        (root / "release-manifest.json").write_text(json.dumps({"schema_version": 1, "tag": TAG, "commit": COMMIT, "image": IMAGE, "image_config_digest": f"sha256:{'c' * 64}", "artifacts": entries}))
         return hashlib.sha256(b"binary-linux-amd64").hexdigest()
 
     def run_tool(self, root: Path, commit: str = COMMIT) -> subprocess.CompletedProcess[str]:

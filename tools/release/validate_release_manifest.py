@@ -99,6 +99,9 @@ def validate(manifest_path: Path, artifacts: Path) -> dict[str, object]:
     if not isinstance(commit, str) or COMMIT.fullmatch(commit) is None:
         fail("RELEASE_MANIFEST_INVALID", "manifest commit must be a lowercase 40-hex identity")
     validate_image(manifest.get("image"), tag)
+    image_config_digest = manifest.get("image_config_digest")
+    if not isinstance(image_config_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", image_config_digest) is None:
+        fail("RELEASE_IMAGE_CONFIG_DIGEST_INVALID", "image_config_digest must be a sha256 config digest")
 
     artifact_entries = manifest.get("artifacts")
     if not isinstance(artifact_entries, list):

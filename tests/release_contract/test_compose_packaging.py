@@ -11,9 +11,9 @@ class ComposePackagingContractTest(unittest.TestCase):
         cls.official = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         cls.local = (ROOT / "docker-compose.local.yml").read_text(encoding="utf-8")
 
-    def test_official_compose_requires_a_fixed_runtime_image_reference_and_host_loopback_admin(self) -> None:
+    def test_official_compose_uses_admitted_local_tag_and_host_loopback_admin(self) -> None:
         self.assertIn(
-            "${SPONZEY_EDGE_IMAGE_REFERENCE:-ghcr.io/sponzey-lab/sponzey-edge:${SPONZEY_EDGE_TAG:?set a SemVer tag}@sha256:${SPONZEY_EDGE_DIGEST:?set the matching immutable image digest}}",
+            "${SPONZEY_EDGE_LOCAL_IMAGE:-ghcr.io/sponzey-lab/sponzey-edge:${SPONZEY_EDGE_TAG:?set a SemVer tag}@sha256:${SPONZEY_EDGE_DIGEST:?set the matching immutable image digest}}",
             self.official,
         )
         self.assertIn("network_mode: host", self.official)

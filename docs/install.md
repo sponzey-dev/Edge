@@ -63,15 +63,22 @@ target/release/edge-proxy
 
 ## Docker
 
-Official releases require a tag and matching immutable GHCR digest:
+Official releases require a tag and matching immutable GHCR digest. Use the
+release's `release-manifest.json` and Linux archive. Pull the pinned image,
+install the manifest root-owned, then let the installer compare the manifest's
+platform config ID with Docker before it writes the runtime identity:
 
 ```bash
+IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:RELEASE_MANIFEST_IMAGE_SHA256
+sudo docker pull "$IMAGE_REFERENCE"
+sudo install -o root -g root -m 0444 release-manifest.json /root/release-manifest.json
 sudo ./compose/install.sh \
   --image-tag vX.Y.Z \
-  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX
-sudo docker compose --project-directory /etc/sponzey-edge/compose \
-  --env-file /etc/sponzey-edge/compose/runtime.env \
-  --file /etc/sponzey-edge/compose/docker-compose.yml up -d --wait
+  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX \
+  --release-manifest-file /root/release-manifest.json
+sudo /usr/local/libexec/sponzey-edge/compose-upgrade-helper \
+  --project-directory /etc/sponzey-edge/compose \
+  --file /etc/sponzey-edge/compose/docker-compose.yml start-ready
 ```
 
 Local builds are intentionally separate from the official image path:

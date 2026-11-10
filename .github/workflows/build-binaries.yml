@@ -245,6 +245,16 @@ jobs:
           test "${revision}" = "${GITHUB_SHA}"
           test "${version}" = "${GITHUB_REF_NAME}"
 
+      - name: Record published Linux amd64 image config digest
+        id: image_config
+        if: steps.release_tag.outputs.publish == 'true'
+        shell: bash
+        run: |
+          image="ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}"
+          config_digest="$(docker image inspect --format '{{.Id}}' "${image}")"
+          [[ "${config_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=${config_digest}" >> "${GITHUB_OUTPUT}"
+
       - name: Assemble release assets
         if: steps.release_tag.outputs.publish == 'true'
         shell: bash
@@ -255,6 +265,7 @@ jobs:
             --tag "${GITHUB_REF_NAME}" \
             --commit "${GITHUB_SHA}" \
             --image "ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}" \
+            --image-config-digest "${{ steps.image_config.outputs.digest }}" \
             --created "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
       - name: Validate release manifest

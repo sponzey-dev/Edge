@@ -145,16 +145,21 @@ runtime policy mechanism.
 
 ## Docker Compose
 
-Official Compose runs a published Linux image only. Set the SemVer tag and its
-matching immutable GHCR manifest digest from the release manifest, then start:
+Official Compose runs a published Linux image only. Pull the exact image from
+the release manifest, place that manifest at a root-owned path, then install
+and start through the fixed helper:
 
 ```bash
+IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:RELEASE_MANIFEST_IMAGE_SHA256
+sudo docker pull "$IMAGE_REFERENCE"
+sudo install -o root -g root -m 0444 release-manifest.json /root/release-manifest.json
 sudo ./compose/install.sh \
   --image-tag vX.Y.Z \
-  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX
-sudo docker compose --project-directory /etc/sponzey-edge/compose \
-  --env-file /etc/sponzey-edge/compose/runtime.env \
-  --file /etc/sponzey-edge/compose/docker-compose.yml up -d --wait
+  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX \
+  --release-manifest-file /root/release-manifest.json
+sudo /usr/local/libexec/sponzey-edge/compose-upgrade-helper \
+  --project-directory /etc/sponzey-edge/compose \
+  --file /etc/sponzey-edge/compose/docker-compose.yml start-ready
 ```
 
 The service uses Linux host networking so the Admin API remains reachable only
@@ -182,8 +187,11 @@ saving the bare digest reference is not a valid offline artifact.
 
 The prepared Compose file remains compatible with the older two-field
 `SPONZEY_EDGE_TAG`/`SPONZEY_EDGE_DIGEST` manifest during the backup phase. New
-installs still use the complete immutable image reference; the helper changes
-the runtime manifest atomically only after artifact admission and backup.
+runtime manifests retain both the OCI `tag@sha256:digest` provenance and the
+platform `image_config_digest`, while Compose executes the admitted local tag.
+The fixed helper checks the local image ID against the manifest before every
+start, rollback, or recovery start. It atomically changes the runtime manifest
+only after artifact admission and backup.
 
 ```bash
 IMAGE=ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:RELEASE_MANIFEST_IMAGE_SHA256
@@ -195,20 +203,39 @@ sudo ./compose/prepare-upgrade.sh
 ```
 
 Provide that root-owned, non-writable tagged image artifact and an owner-only
-root-owned passphrase file. The fixed helper records the requested digest in
-the upgrade journal, loads the artifact without a network pull, and requires
-the fixed tag's OCI version label to equal `vX.Y.Z` plus a valid revision label
-before it stages the local tag. The fixed upgrade-only Compose override runs
+root-owned passphrase file. After validating the downloaded release manifest
+against that release's image/archive identities, install the same manifest at
+the fixed root-owned path:
+
+```bash
+sudo install -o root -g root -m 0444 release-manifest.json /root/release-manifest.json
+```
+
+The fixed helper records the requested OCI index
+digest in the upgrade journal, loads the artifact without a network pull, and
+requires the root-owned verified release manifest to bind the requested
+`tag@sha256:digest` to its platform `image_config_digest`, then checks the
+loaded Docker image config ID against that value and verifies OCI version and
+revision labels. The config ID and OCI index digest are distinct identities;
+the manifest binds the platform-specific config ID to the published image
+reference. The runtime manifest keeps the immutable reference as
+`tag@sha256:digest`; Compose uses the local tag because Docker does not restore
+registry RepoDigests during archive load. Before any new start, rollback, or
+recovery start, the helper compares the loaded local tag's image config ID with
+the root-owned manifest.
+The fixed upgrade-only Compose override runs
 its short-lived backup/verify command as root solely to read that mount; normal
 serving remains non-root. The deployment kind is required so the maintenance
 CLI cannot select a service-manager helper implicitly:
 
 ```bash
+COMPOSE_DATA_DIR="$(sudo docker volume inspect --format '{{.Mountpoint}}' compose_edge-data)/data"
 sudo ./edge-proxy upgrade \
   --deployment compose \
-  --data-dir /var/lib/sponzey-edge/data \
+  --data-dir "$COMPOSE_DATA_DIR" \
   --version vX.Y.Z \
   --image-digest IMAGE_SHA256_WITHOUT_PREFIX \
+  --release-manifest-file /root/release-manifest.json \
   --artifact-file /root/sponzey-edge-image.tar \
   --passphrase-file /run/secrets/sponzey-edge-upgrade-passphrase
 ```
@@ -216,10 +243,22 @@ sudo ./edge-proxy upgrade \
 `compose/install.sh` installs the service and its fixed helper; the target
 archive's `compose/prepare-upgrade.sh` is the explicit control-plane migration
 step for an older Compose installation. Neither script installs the host
-maintenance CLI. Keep the verified release archive available and invoke its
-top-level `./edge-proxy` binary as above. If a recorded operation requires
-recovery, run `./edge-proxy upgrade recover`
-with the same `--deployment compose`, data directory, and operation ID. Do not
+maintenance CLI. Keep the verified release archive available, place its
+verified `release-manifest.json` at the root-owned path supplied above, and
+invoke its top-level `./edge-proxy` binary. If a recorded operation requires
+recovery, recompute the mountpoint and run:
+
+```bash
+COMPOSE_DATA_DIR="$(sudo docker volume inspect --format '{{.Mountpoint}}' compose_edge-data)/data"
+sudo ./edge-proxy upgrade recover \
+  --deployment compose \
+  --data-dir "$COMPOSE_DATA_DIR" \
+  --operation-id OPERATION_ID
+```
+
+Do not use the systemd host data path for a Compose deployment, because its
+operation journal must persist inside the named volume and remain independent
+of a systemd installation. Do not
 replace these fixed values with arbitrary Docker arguments or environment
 variables.
 

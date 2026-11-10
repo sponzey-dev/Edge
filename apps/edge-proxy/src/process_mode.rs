@@ -122,17 +122,33 @@ fn parse_upgrade_mode(tokens: &[String]) -> Result<ProcessMode, AppError> {
             "--deployment",
             "--version",
             "--image-digest",
+            "--release-manifest-file",
             "--artifact-file",
             "--passphrase-file",
         ],
         &[],
     )?;
+    let deployment = parse_upgrade_deployment(required_value(&parsed.values, "--deployment")?)?;
+    let release_manifest_file = parsed.values.get("--release-manifest-file").cloned();
+    if deployment == UpgradeDeployment::Compose && release_manifest_file.is_none() {
+        return Err(AppError::new(
+            ErrorCode::ProcessCommandInvalid,
+            "Compose upgrade requires --release-manifest-file from the verified release candidate",
+        ));
+    }
+    if deployment == UpgradeDeployment::Systemd && release_manifest_file.is_some() {
+        return Err(AppError::new(
+            ErrorCode::ProcessCommandInvalid,
+            "--release-manifest-file is only valid for Compose upgrades",
+        ));
+    }
     Ok(ProcessMode::Upgrade(UpgradeOptions {
         data_dir: required_path(&parsed.values, "--data-dir")?,
-        deployment: parse_upgrade_deployment(required_value(&parsed.values, "--deployment")?)?,
+        deployment,
         request: OfflineUpgradeRequest {
             target_version: required_value(&parsed.values, "--version")?.to_string(),
             image_digest: required_value(&parsed.values, "--image-digest")?.to_string(),
+            release_manifest_file,
             artifact_file: required_value(&parsed.values, "--artifact-file")?.to_string(),
             passphrase_file: required_value(&parsed.values, "--passphrase-file")?.to_string(),
         },
@@ -431,6 +447,7 @@ mod tests {
                 request: OfflineUpgradeRequest {
                     target_version: "v1.2.3".to_string(),
                     image_digest: "a".repeat(64),
+                    release_manifest_file: None,
                     artifact_file: "/root/edge-proxy-1.2.3".to_string(),
                     passphrase_file: "/run/secrets/upgrade-passphrase".to_string(),
                 },
@@ -450,19 +467,58 @@ mod tests {
             "v1.2.3",
             "--image-digest",
             &"a".repeat(64),
+            "--release-manifest-file",
+            "/root/release-manifest.json",
             "--artifact-file",
             "/root/image.tar",
             "--passphrase-file",
             "/run/secrets/upgrade",
         ]))
         .unwrap();
-        assert_eq!(
-            match mode {
-                ProcessMode::Upgrade(value) => value.deployment,
-                _ => unreachable!(),
-            },
-            UpgradeDeployment::Compose
-        );
+        match mode {
+            ProcessMode::Upgrade(value) => {
+                assert_eq!(value.deployment, UpgradeDeployment::Compose);
+                assert_eq!(
+                    value.request.release_manifest_file,
+                    Some("/root/release-manifest.json".to_string())
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert!(parse_process_mode(&args(&[
+            "upgrade",
+            "--data-dir",
+            "/data",
+            "--deployment",
+            "compose",
+            "--version",
+            "v1.2.3",
+            "--image-digest",
+            &"a".repeat(64),
+            "--artifact-file",
+            "/root/image.tar",
+            "--passphrase-file",
+            "/run/secrets/upgrade",
+        ]))
+        .is_err());
+        assert!(parse_process_mode(&args(&[
+            "upgrade",
+            "--data-dir",
+            "/data",
+            "--deployment",
+            "systemd",
+            "--version",
+            "v1.2.3",
+            "--image-digest",
+            &"a".repeat(64),
+            "--release-manifest-file",
+            "/root/release-manifest.json",
+            "--artifact-file",
+            "/root/image.tar",
+            "--passphrase-file",
+            "/run/secrets/upgrade",
+        ]))
+        .is_err());
         assert!(parse_process_mode(&args(&["upgrade", "--data-dir", "/data"])).is_err());
     }
 

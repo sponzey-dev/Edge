@@ -37,6 +37,8 @@ class ReleaseAssemblyContractTest(unittest.TestCase):
                 "a" * 40,
                 "--image",
                 image,
+                "--image-config-digest",
+                "c" * 64,
                 "--created",
                 "2026-08-14T00:00:00Z",
             ],

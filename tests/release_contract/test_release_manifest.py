@@ -60,6 +60,7 @@ class ReleaseManifestContractTest(unittest.TestCase):
             "tag": "v0.1.0",
             "commit": "a" * 40,
             "image": image or f"{IMAGE}:v0.1.0@sha256:{'b' * 64}",
+            "image_config_digest": f"sha256:{'c' * 64}",
             "artifacts": artifacts,
         }
         (root / "release-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -98,6 +99,20 @@ class ReleaseManifestContractTest(unittest.TestCase):
             result = self.validate(Path(directory))
 
         self.assertIn("RELEASE_IMAGE_DIGEST_INVALID", result.stderr)
+
+    def test_rejects_missing_or_malformed_image_config_digest(self) -> None:
+        for value in (None, "sha256:bad"):
+            with self.subTest(value=value), self.make_release() as directory:
+                root = Path(directory)
+                manifest_path = root / "release-manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if value is None:
+                    manifest.pop("image_config_digest")
+                else:
+                    manifest["image_config_digest"] = value
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                result = self.validate(root)
+                self.assertIn("RELEASE_IMAGE_CONFIG_DIGEST_INVALID", result.stderr)
 
     def test_rejects_checksum_mismatch(self) -> None:
         with self.make_release(corrupt_checksums=True) as directory:

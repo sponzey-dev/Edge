@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "edge-proxy"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "edge-adapters",
  "edge-admin-api",

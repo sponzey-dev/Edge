@@ -1,6 +1,10 @@
 import os
+import json
+import hashlib
+import io
 import subprocess
 import tempfile
+import tarfile
 import unittest
 from pathlib import Path
 
@@ -17,6 +21,33 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         cls.prepare = cls.directory / "prepare-upgrade.sh"
         cls.workflow = (ROOT / ".github" / "workflows" / "build-binaries.yml").read_text(
             encoding="utf-8"
+        )
+
+    @staticmethod
+    def write_image_archive(path: Path, version: str = "v1.2.3") -> str:
+        config = b'{"architecture":"amd64","os":"linux","config":{}}'
+        config_name = "edge-config.json"
+        manifest = json.dumps([{
+            "Config": config_name,
+            "RepoTags": [f"ghcr.io/sponzey-lab/sponzey-edge:{version}"],
+            "Layers": [],
+        }]).encode()
+        with tarfile.open(path, "w") as archive:
+            for name, payload in (("manifest.json", manifest), (config_name, config)):
+                member = tarfile.TarInfo(name)
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+        return "sha256:" + hashlib.sha256(config).hexdigest()
+
+    @staticmethod
+    def write_runtime_manifest(path: Path, version: str, image_digest: str, config_digest: str) -> None:
+        path.write_text(
+            f"SPONZEY_EDGE_TAG={version}\n"
+            f"SPONZEY_EDGE_DIGEST={image_digest}\n"
+            f"SPONZEY_EDGE_IMAGE_CONFIG_DIGEST=sha256:{config_digest}\n"
+            f"SPONZEY_EDGE_LOCAL_IMAGE=ghcr.io/sponzey-lab/sponzey-edge:{version}\n"
+            f"SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:{version}@sha256:{image_digest}\n",
+            encoding="utf-8",
         )
 
     def test_linux_archives_include_fixed_compose_upgrade_assets(self) -> None:
@@ -38,20 +69,28 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         self.assertIn('--env-file "$RUNTIME_ENV_FILE"', helper)
         self.assertIn("runtime.env", installer)
 
-    def test_first_install_uses_an_immutable_reference_but_offline_stage_uses_the_admitted_tag(self) -> None:
+    def test_compose_uses_admitted_local_tag_and_preserves_immutable_provenance(self) -> None:
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         helper = self.helper.read_text(encoding="utf-8")
         installer = self.install.read_text(encoding="utf-8")
         self.assertIn(
-            "${SPONZEY_EDGE_IMAGE_REFERENCE:-ghcr.io/sponzey-lab/sponzey-edge:${SPONZEY_EDGE_TAG:?set a SemVer tag}@sha256:${SPONZEY_EDGE_DIGEST:?set the matching immutable image digest}}",
+            "${SPONZEY_EDGE_LOCAL_IMAGE:-ghcr.io/sponzey-lab/sponzey-edge:${SPONZEY_EDGE_TAG:?set a SemVer tag}@sha256:${SPONZEY_EDGE_DIGEST:?set the matching immutable image digest}}",
             compose,
         )
-        self.assertIn('SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s@sha256:%s', installer)
-        self.assertIn('SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s', helper)
+        self.assertIn("--release-manifest-file", installer)
+        self.assertIn("SPONZEY_EDGE_IMAGE_CONFIG_DIGEST", installer)
+        self.assertIn('docker image inspect --format \'{{.Id}}\' "$image_reference"', installer)
+        self.assertIn('docker image tag "$actual_config_digest" "$local_image"', installer)
+        self.assertIn('"$2" "$digest" "$expected_config_digest" "$local_image" "$image_reference"', installer)
+        self.assertIn('SPONZEY_EDGE_IMAGE_REFERENCE=%s', installer)
+        self.assertIn('SPONZEY_EDGE_LOCAL_IMAGE=ghcr.io/sponzey-lab/sponzey-edge:%s', helper)
+        self.assertIn('SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s@%s', helper)
+        self.assertIn('SPONZEY_EDGE_IMAGE_CONFIG_DIGEST=%s', helper)
+        self.assertIn("unset SPONZEY_EDGE_TAG SPONZEY_EDGE_DIGEST", helper)
 
     def test_prepared_control_plane_accepts_a_pre_reference_immutable_runtime_manifest(self) -> None:
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-        self.assertIn("SPONZEY_EDGE_IMAGE_REFERENCE:-", compose)
+        self.assertIn("SPONZEY_EDGE_LOCAL_IMAGE:-", compose)
         self.assertIn("SPONZEY_EDGE_TAG:?set a SemVer tag", compose)
         self.assertIn("SPONZEY_EDGE_DIGEST:?set the matching immutable image digest", compose)
 
@@ -59,7 +98,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         for document in ("README.md", "docs/deployment.md", "docs/install.md"):
             source = (ROOT / document).read_text(encoding="utf-8")
             self.assertIn(
-                "--env-file /etc/sponzey-edge/compose/runtime.env",
+                "/usr/local/libexec/sponzey-edge/compose-upgrade-helper",
                 source,
                 document,
             )
@@ -122,11 +161,20 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 encoding="utf-8",
             )
             fake_docker.chmod(0o755)
+            manifest = temporary / "release-manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "tag": "v1.2.3",
+                "image": "ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:" + "a" * 64,
+                "image_config_digest": "sha256:" + "b" * 64,
+            }), encoding="utf-8")
             helper = temporary / "compose-upgrade-helper"
             helper.write_text(
                 self.helper.read_text(encoding="utf-8").replace(
                     "DOCKER=/usr/bin/docker", f"DOCKER={fake_docker}"
-                ).replace("RUNTIME_ENV_FILE=/etc/sponzey-edge/compose/runtime.env", f"RUNTIME_ENV_FILE='{self.helper}'").replace("STAGED_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.stage", f"STAGED_ENV_FILE='{temporary / 'runtime.env.stage'}'"),
+                ).replace("ROOT_UID=0", f"ROOT_UID={os.getuid()}")
+                .replace("RUNTIME_ENV_FILE=/etc/sponzey-edge/compose/runtime.env", f"RUNTIME_ENV_FILE='{self.helper}'")
+                .replace("STAGED_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.stage", f"STAGED_ENV_FILE='{temporary / 'runtime.env.stage'}'"),
                 encoding="utf-8",
             )
             helper.chmod(0o755)
@@ -143,6 +191,8 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                     "v1.2.3",
                     "--image-digest",
                     "sha256:" + "a" * 64,
+                    "--release-manifest-file",
+                    str(manifest),
                 ],
                 check=True,
                 cwd=ROOT,
@@ -167,7 +217,9 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 (temporary / "runtime.env.stage").read_text(encoding="utf-8"),
                 "SPONZEY_EDGE_TAG=v1.2.3\n"
                 + "SPONZEY_EDGE_DIGEST=" + "a" * 64 + "\n"
-                + "SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:v1.2.3\n",
+                + "SPONZEY_EDGE_IMAGE_CONFIG_DIGEST=sha256:" + "b" * 64 + "\n"
+                + "SPONZEY_EDGE_LOCAL_IMAGE=ghcr.io/sponzey-lab/sponzey-edge:v1.2.3\n"
+                + "SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:" + "a" * 64 + "\n",
             )
 
     def test_preflight_rejects_extra_arguments_before_invoking_docker(self) -> None:
@@ -213,15 +265,20 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             capture = temporary / "docker-arguments"
             fake_docker = temporary / "docker"
             fake_docker.write_text(
-                "#!/bin/sh\nprintf '%s ' \"$@\" >> \"$CAPTURE\"\nprintf '\\n' >> \"$CAPTURE\"\n",
+                "#!/bin/sh\n"
+                "if [ \"$1\" = image ] && [ \"$2\" = inspect ]; then printf '%s\\n' \"$IMAGE_ID\"; exit 0; fi\n"
+                "printf '%s ' \"$@\" >> \"$CAPTURE\"\nprintf '\\n' >> \"$CAPTURE\"\n",
                 encoding="utf-8",
             )
             fake_docker.chmod(0o755)
+            runtime = temporary / "runtime.env"
+            self.write_runtime_manifest(runtime, "v1.2.3", "a" * 64, "b" * 64)
             helper = temporary / "compose-upgrade-helper"
             helper.write_text(
                 self.helper.read_text(encoding="utf-8").replace(
                     "DOCKER=/usr/bin/docker", f"DOCKER={fake_docker}"
-                ).replace("RUNTIME_ENV_FILE=/etc/sponzey-edge/compose/runtime.env", f"RUNTIME_ENV_FILE='{self.helper}'"),
+                ).replace("ROOT_UID=0", f"ROOT_UID={os.getuid()}")
+                .replace("RUNTIME_ENV_FILE=/etc/sponzey-edge/compose/runtime.env", f"RUNTIME_ENV_FILE='{runtime}'"),
                 encoding="utf-8",
             )
             helper.chmod(0o755)
@@ -231,7 +288,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 "--file",
                 "/etc/sponzey-edge/compose/docker-compose.yml",
             ]
-            environment = {"CAPTURE": str(capture)}
+            environment = {"CAPTURE": str(capture), "IMAGE_ID": "sha256:" + "b" * 64}
 
             subprocess.run([str(helper), *prefix, "drain-stop"], check=True, cwd=ROOT, env=environment)
             subprocess.run([str(helper), *prefix, "start-ready"], check=True, cwd=ROOT, env=environment)
@@ -239,11 +296,47 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             self.assertEqual(
                 capture.read_text(encoding="utf-8").splitlines(),
                 [
-                    f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {self.helper} stop --timeout 30 edge ",
-                    f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {self.helper} up --no-build --pull never --detach edge ",
-                    f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {self.helper} exec -T edge edge-proxy probe ready --admin-bind 127.0.0.1:9443 ",
+                    f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {runtime} stop --timeout 30 edge ",
+                    f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {runtime} up --no-build --pull never --detach edge ",
+                    f"compose --project-directory /etc/sponzey-edge/compose --file /etc/sponzey-edge/compose/docker-compose.yml --env-file {runtime} exec -T edge edge-proxy probe ready --admin-bind 127.0.0.1:9443 ",
                 ],
             )
+
+    def test_start_ready_rejects_a_local_tag_with_the_wrong_config_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            capture = temporary / "docker-arguments"
+            fake_docker = temporary / "docker"
+            fake_docker.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = image ] && [ \"$2\" = inspect ]; then printf '%s\\n' \"$IMAGE_ID\"; exit 0; fi\n"
+                "printf '%s\\n' \"$@\" >> \"$CAPTURE\"\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            runtime = temporary / "runtime.env"
+            self.write_runtime_manifest(runtime, "v1.2.3", "a" * 64, "b" * 64)
+            helper = temporary / "compose-upgrade-helper"
+            helper.write_text(
+                self.helper.read_text(encoding="utf-8").replace(
+                    "DOCKER=/usr/bin/docker", f"DOCKER={fake_docker}"
+                ).replace("ROOT_UID=0", f"ROOT_UID={os.getuid()}")
+                .replace("RUNTIME_ENV_FILE=/etc/sponzey-edge/compose/runtime.env", f"RUNTIME_ENV_FILE='{runtime}'"),
+                encoding="utf-8",
+            )
+            helper.chmod(0o755)
+
+            result = subprocess.run(
+                [str(helper), "--project-directory", "/etc/sponzey-edge/compose", "--file", "/etc/sponzey-edge/compose/docker-compose.yml", "start-ready"],
+                cwd=ROOT,
+                env={"CAPTURE": str(capture), "IMAGE_ID": "sha256:" + "c" * 64},
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("runtime image config digest mismatch", result.stderr)
+            self.assertFalse(capture.exists(), "Compose must not start an image with the wrong config ID")
 
     def test_lifecycle_propagates_docker_failure_without_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -280,9 +373,17 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
             artifact = temporary / "edge-image.tar"
-            artifact.write_bytes(b"test image archive")
+            config_digest = self.write_image_archive(artifact)
             artifact.chmod(0o644)
             digest = "a" * 64
+            manifest = temporary / "release-manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "tag": "v1.2.3",
+                "image": f"ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:{'b' * 64}",
+                "image_config_digest": config_digest,
+            }), encoding="utf-8")
+            manifest.chmod(0o644)
             capture = temporary / "docker-arguments"
             fake_docker = temporary / "docker"
             fake_docker.write_text(
@@ -292,6 +393,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 "  case \"$4\" in\n"
                 "    *version*) printf '%s\\n' v1.2.3 ;;\n"
                 "    *revision*) printf '%s\\n' 0123456789abcdef0123456789abcdef01234567 ;;\n"
+                f"    *Id*) printf '%s\\n' {config_digest} ;;\n"
                 "  esac\n"
                 "fi\n",
                 encoding="utf-8",
@@ -319,7 +421,9 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                     "--version",
                     "v1.2.3",
                     "--image-digest",
-                    digest,
+                    "b" * 64,
+                    "--release-manifest-file",
+                    str(manifest),
                 ],
                 capture_output=True,
                 text=True,
@@ -336,14 +440,156 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                     f"image load --input {artifact} ",
                     "image inspect --format {{ index .Config.Labels \"org.opencontainers.image.version\" }} ghcr.io/sponzey-lab/sponzey-edge:v1.2.3 ",
                     "image inspect --format {{ index .Config.Labels \"org.opencontainers.image.revision\" }} ghcr.io/sponzey-lab/sponzey-edge:v1.2.3 ",
+                    "image inspect --format {{.Id}} ghcr.io/sponzey-lab/sponzey-edge:v1.2.3 ",
                 ],
             )
+
+    def test_admission_rejects_loaded_image_config_identity_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            artifact = temporary / "edge-image.tar"
+            expected_config_digest = self.write_image_archive(artifact)
+            artifact.chmod(0o644)
+            manifest = temporary / "release-manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "tag": "v1.2.3",
+                "image": f"ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:{'a' * 64}",
+                "image_config_digest": expected_config_digest,
+            }), encoding="utf-8")
+            manifest.chmod(0o644)
+            fake_docker = temporary / "docker"
+            fake_docker.write_text(
+                "#!/bin/sh\n"
+                "if [ \"$1\" = image ] && [ \"$2\" = load ]; then exit 0; fi\n"
+                "case \"$4\" in\n"
+                "  *version*) printf '%s\\n' v1.2.3 ;;\n"
+                "  *revision*) printf '%s\\n' 0123456789abcdef0123456789abcdef01234567 ;;\n"
+                "  *Id*) printf '%s\\n' sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            helper = temporary / "compose-upgrade-helper"
+            helper.write_text(
+                self.helper.read_text(encoding="utf-8")
+                .replace("DOCKER=/usr/bin/docker", f"DOCKER={fake_docker}")
+                .replace("ROOT_UID=0", f"ROOT_UID={os.getuid()}"),
+                encoding="utf-8",
+            )
+            helper.chmod(0o755)
+
+            result = subprocess.run(
+                [
+                    str(helper),
+                    "--project-directory", "/etc/sponzey-edge/compose",
+                    "--file", "/etc/sponzey-edge/compose/docker-compose.yml",
+                    "admit-artifact", "--input", str(artifact),
+                    "--version", "v1.2.3", "--image-digest", "a" * 64,
+                    "--release-manifest-file", str(manifest),
+                ],
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("loaded artifact config digest mismatch", result.stderr)
+
+    def test_admission_rejects_archive_config_mismatch_before_docker_load(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            artifact = temporary / "edge-image.tar"
+            actual_config_digest = self.write_image_archive(artifact)
+            artifact.chmod(0o644)
+            manifest = temporary / "release-manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "tag": "v1.2.3",
+                "image": f"ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:{'a' * 64}",
+                "image_config_digest": "sha256:" + "b" * 64,
+            }), encoding="utf-8")
+            manifest.chmod(0o644)
+            capture = temporary / "docker-arguments"
+            fake_docker = temporary / "docker"
+            fake_docker.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CAPTURE\"\nexit 41\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            helper = temporary / "compose-upgrade-helper"
+            helper.write_text(
+                self.helper.read_text(encoding="utf-8")
+                .replace("DOCKER=/usr/bin/docker", f"DOCKER={fake_docker}")
+                .replace("ROOT_UID=0", f"ROOT_UID={os.getuid()}"),
+                encoding="utf-8",
+            )
+            helper.chmod(0o755)
+
+            result = subprocess.run(
+                [
+                    str(helper), "--project-directory", "/etc/sponzey-edge/compose",
+                    "--file", "/etc/sponzey-edge/compose/docker-compose.yml", "admit-artifact",
+                    "--input", str(artifact), "--version", "v1.2.3", "--image-digest", "a" * 64,
+                    "--release-manifest-file", str(manifest),
+                ],
+                capture_output=True, text=True, cwd=ROOT, env={"CAPTURE": str(capture)},
+            )
+
+            self.assertNotEqual(actual_config_digest, "sha256:" + "b" * 64)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("image archive does not match verified release manifest", result.stderr)
+            self.assertFalse(capture.exists())
+
+    def test_admission_rejects_oci_digest_that_differs_from_verified_release_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            artifact = temporary / "edge-image.tar"
+            self.write_image_archive(artifact)
+            artifact.chmod(0o644)
+            manifest = temporary / "release-manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "tag": "v1.2.3",
+                "image": f"ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:{'a' * 64}",
+                "image_config_digest": f"sha256:{'c' * 64}",
+            }), encoding="utf-8")
+            manifest.chmod(0o644)
+            capture = temporary / "docker-arguments"
+            fake_docker = temporary / "docker"
+            fake_docker.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CAPTURE\"\nexit 41\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            helper = temporary / "compose-upgrade-helper"
+            helper.write_text(
+                self.helper.read_text(encoding="utf-8")
+                .replace("DOCKER=/usr/bin/docker", f"DOCKER={fake_docker}")
+                .replace("ROOT_UID=0", f"ROOT_UID={os.getuid()}"),
+                encoding="utf-8",
+            )
+            helper.chmod(0o755)
+
+            result = subprocess.run(
+                [
+                    str(helper), "--project-directory", "/etc/sponzey-edge/compose",
+                    "--file", "/etc/sponzey-edge/compose/docker-compose.yml", "admit-artifact",
+                    "--input", str(artifact), "--version", "v1.2.3", "--image-digest", "b" * 64,
+                    "--release-manifest-file", str(manifest),
+                ],
+                capture_output=True, text=True, cwd=ROOT, env={"CAPTURE": str(capture)},
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("release manifest does not match requested image identity", result.stderr)
+            self.assertFalse(capture.exists())
 
     def test_admission_rejects_symlink_before_docker_and_release_label_mismatch_after_load(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
             artifact = temporary / "edge-image.tar"
-            artifact.write_bytes(b"test image archive")
+            self.write_image_archive(artifact)
             artifact.chmod(0o644)
             symlink = temporary / "unsafe-image.tar"
             symlink.symlink_to(artifact)
@@ -364,6 +610,14 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 encoding="utf-8",
             )
             helper.chmod(0o755)
+            manifest = temporary / "release-manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "tag": "v1.2.3",
+                "image": f"ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:{digest}",
+                "image_config_digest": self.write_image_archive(artifact),
+            }), encoding="utf-8")
+            manifest.chmod(0o644)
             prefix = [
                 str(helper),
                 "--project-directory",
@@ -375,7 +629,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             ]
 
             unsafe = subprocess.run(
-                [*prefix, str(symlink), "--version", "v1.2.3", "--image-digest", digest],
+                [*prefix, str(symlink), "--version", "v1.2.3", "--image-digest", digest, "--release-manifest-file", str(manifest)],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -384,7 +638,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             self.assertIn("artifact input is missing or unsafe", unsafe.stderr)
 
             mismatch = subprocess.run(
-                [*prefix, str(artifact), "--version", "v1.2.3", "--image-digest", digest],
+                [*prefix, str(artifact), "--version", "v1.2.3", "--image-digest", digest, "--release-manifest-file", str(manifest)],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -396,8 +650,16 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
             artifact = temporary / "edge-image.tar"
-            artifact.write_bytes(b"test image archive")
+            config_digest = self.write_image_archive(artifact)
             artifact.chmod(0o644)
+            manifest = temporary / "release-manifest.json"
+            manifest.write_text(json.dumps({
+                "schema_version": 1,
+                "tag": "v1.2.3",
+                "image": f"ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:{'a' * 64}",
+                "image_config_digest": config_digest,
+            }), encoding="utf-8")
+            manifest.chmod(0o644)
             fake_docker = temporary / "docker"
             fake_docker.write_text("#!/bin/sh\nexit 41\n", encoding="utf-8")
             fake_docker.chmod(0o755)
@@ -424,6 +686,8 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                     "v1.2.3",
                     "--image-digest",
                     "a" * 64,
+                    "--release-manifest-file",
+                    str(manifest),
                 ],
                 cwd=ROOT,
                 capture_output=True,
@@ -438,15 +702,17 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             capture = temporary / "docker-arguments"
             fake_docker = temporary / "docker"
             fake_docker.write_text(
-                "#!/bin/sh\nprintf '%s ' \"$@\" >> \"$CAPTURE\"\nprintf '\\n' >> \"$CAPTURE\"\n",
+                "#!/bin/sh\n"
+                "if [ \"$1\" = image ] && [ \"$2\" = inspect ]; then printf '%s\\n' \"$IMAGE_ID\"; exit 0; fi\n"
+                "printf '%s ' \"$@\" >> \"$CAPTURE\"\nprintf '\\n' >> \"$CAPTURE\"\n",
                 encoding="utf-8",
             )
             fake_docker.chmod(0o755)
             active = temporary / "runtime.env"
             staged = temporary / "runtime.env.stage"
             previous = temporary / "runtime.env.previous"
-            active.write_text("SPONZEY_EDGE_TAG=v1.0.0\nSPONZEY_EDGE_DIGEST=" + "a" * 64 + "\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:v1.0.0@sha256:" + "a" * 64 + "\n", encoding="utf-8")
-            staged.write_text("SPONZEY_EDGE_TAG=v1.1.0\nSPONZEY_EDGE_DIGEST=" + "b" * 64 + "\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:v1.1.0\n", encoding="utf-8")
+            self.write_runtime_manifest(active, "v1.0.0", "a" * 64, "d" * 64)
+            self.write_runtime_manifest(staged, "v1.1.0", "b" * 64, "e" * 64)
             helper = temporary / "compose-upgrade-helper"
             helper.write_text(
                 self.helper.read_text(encoding="utf-8")
@@ -463,7 +729,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             subprocess.run([*prefix, "switch-staged"], check=True, cwd=ROOT, env={"CAPTURE": str(capture)})
             self.assertIn("v1.1.0", active.read_text(encoding="utf-8"))
             self.assertIn("v1.0.0", previous.read_text(encoding="utf-8"))
-            subprocess.run([*prefix, "rollback", "--backup-id", "backup", "--previous-artifact-digest", "a" * 64], check=True, cwd=ROOT, env={"CAPTURE": str(capture)})
+            subprocess.run([*prefix, "rollback", "--backup-id", "backup", "--previous-artifact-digest", "a" * 64], check=True, cwd=ROOT, env={"CAPTURE": str(capture), "IMAGE_ID": "sha256:" + "d" * 64})
             self.assertIn("v1.0.0", active.read_text(encoding="utf-8"))
             self.assertEqual(
                 capture.read_text(encoding="utf-8").splitlines(),
@@ -514,6 +780,7 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
             helper.write_text(
                 self.helper.read_text(encoding="utf-8")
                 .replace("DOCKER=/usr/bin/docker", f"DOCKER={fake_docker}")
+                .replace("ROOT_UID=0", f"ROOT_UID={os.getuid()}")
                 .replace("RUNTIME_ENV_FILE=/etc/sponzey-edge/compose/runtime.env", f"RUNTIME_ENV_FILE='{active}'")
                 .replace("PREVIOUS_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.previous", f"PREVIOUS_ENV_FILE='{previous}'"),
                 encoding="utf-8",

@@ -71,6 +71,8 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("platforms: linux/amd64,linux/arm64", self.workflow)
         self.assertIn("push: true", self.workflow)
         self.assertIn("steps.image.outputs.digest", self.workflow)
+        self.assertIn("steps.image_config.outputs.digest", self.workflow)
+        self.assertIn("--image-config-digest", self.workflow)
         self.assertIn("tools/release/assemble_release_artifacts.py", self.workflow)
         self.assertIn("tools/release/validate_release_manifest.py", self.workflow)
 

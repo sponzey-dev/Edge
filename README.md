@@ -187,16 +187,20 @@ Requirements:
 - Docker Compose
 
 Official releases run a published Linux image identified by both a SemVer tag and
-its immutable manifest digest. From the extracted release package, install and
-start it with:
+its immutable manifest digest. Download the release manifest and install archive,
+then pull the exact image and start through the fixed helper:
 
 ```bash
+IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:RELEASE_MANIFEST_IMAGE_SHA256
+sudo docker pull "$IMAGE_REFERENCE"
+sudo install -o root -g root -m 0444 release-manifest.json /root/release-manifest.json
 sudo ./compose/install.sh \
   --image-tag vX.Y.Z \
-  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX
-sudo docker compose --project-directory /etc/sponzey-edge/compose \
-  --env-file /etc/sponzey-edge/compose/runtime.env \
-  --file /etc/sponzey-edge/compose/docker-compose.yml up -d --wait
+  --image-digest RELEASE_MANIFEST_IMAGE_SHA256_WITHOUT_PREFIX \
+  --release-manifest-file /root/release-manifest.json
+sudo /usr/local/libexec/sponzey-edge/compose-upgrade-helper \
+  --project-directory /etc/sponzey-edge/compose \
+  --file /etc/sponzey-edge/compose/docker-compose.yml start-ready
 ```
 
 For local source development only, use the explicit override:

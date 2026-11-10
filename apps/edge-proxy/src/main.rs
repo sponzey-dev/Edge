@@ -1580,6 +1580,7 @@ mod tests {
             request: edge_domain::OfflineUpgradeRequest {
                 target_version: "v1.2.3".to_string(),
                 image_digest: "b".repeat(64),
+                release_manifest_file: None,
                 artifact_file: "/root/edge-proxy-1.2.3".to_string(),
                 passphrase_file: "/run/secrets/upgrade".to_string(),
             },

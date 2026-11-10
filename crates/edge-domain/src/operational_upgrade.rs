@@ -6,6 +6,8 @@ use crate::{AppError, ErrorCode};
 pub struct OfflineUpgradeRequest {
     pub target_version: String,
     pub image_digest: String,
+    /// Root-owned verified release manifest, used to bind the OCI digest to the platform image ID.
+    pub release_manifest_file: Option<String>,
     /// A root-owned local artifact path reference only; bytes are admitted by an adapter.
     pub artifact_file: String,
     /// A path reference only; the passphrase value is never part of this request.
@@ -36,6 +38,16 @@ impl OfflineUpgradeRequest {
             return Err(AppError::new(
                 ErrorCode::BackupDestinationUnsafe,
                 "upgrade image digest must be SHA-256",
+            ));
+        }
+        if self
+            .release_manifest_file
+            .as_ref()
+            .is_some_and(|path| !path.starts_with('/') || path.contains('\0'))
+        {
+            return Err(AppError::new(
+                ErrorCode::BackupDestinationUnsafe,
+                "release manifest file must be an absolute path reference",
             ));
         }
         if !self.passphrase_file.starts_with('/') || self.passphrase_file.contains('\0') {
@@ -130,6 +142,7 @@ mod tests {
         OfflineUpgradeRequest {
             target_version: "v1.2.3".into(),
             image_digest: format!("sha256:{}", "a".repeat(64)),
+            release_manifest_file: Some("/root/release-manifest.json".into()),
             artifact_file: "/root/edge-proxy-1.2.3".into(),
             passphrase_file: "/secure/upgrade.passphrase".into(),
         }

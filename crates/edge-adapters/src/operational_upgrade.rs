@@ -190,25 +190,39 @@ fn render_helper_command(command: OfflineUpgradeCommand) -> UpgradeHelperInvocat
             artifact_file,
             target_version,
             image_digest,
-        } => vec![
-            "admit-artifact".to_string(),
-            "--input".to_string(),
-            artifact_file,
-            "--version".to_string(),
-            target_version,
-            "--image-digest".to_string(),
-            image_digest,
-        ],
+            release_manifest_file,
+        } => {
+            let mut arguments = vec![
+                "admit-artifact".to_string(),
+                "--input".to_string(),
+                artifact_file,
+                "--version".to_string(),
+                target_version,
+                "--image-digest".to_string(),
+                image_digest,
+            ];
+            if let Some(manifest_file) = release_manifest_file {
+                arguments.extend(["--release-manifest-file".to_string(), manifest_file]);
+            }
+            arguments
+        }
         OfflineUpgradeCommand::Preflight {
             target_version,
             image_digest,
-        } => vec![
-            "preflight".to_string(),
-            "--version".to_string(),
-            target_version,
-            "--image-digest".to_string(),
-            image_digest,
-        ],
+            release_manifest_file,
+        } => {
+            let mut arguments = vec![
+                "preflight".to_string(),
+                "--version".to_string(),
+                target_version,
+                "--image-digest".to_string(),
+                image_digest,
+            ];
+            if let Some(manifest_file) = release_manifest_file {
+                arguments.extend(["--release-manifest-file".to_string(), manifest_file]);
+            }
+            arguments
+        }
         OfflineUpgradeCommand::CreateAndVerifyBackup { passphrase_file } => vec![
             "backup-create-verify".to_string(),
             "--passphrase-file".to_string(),
@@ -294,6 +308,7 @@ impl<R: OfflineUpgradeCommandRunner> OfflineUpgradeDeployment
                     artifact_file: request.artifact_file.clone(),
                     target_version: request.target_version.clone(),
                     image_digest: request.image_digest.clone(),
+                    release_manifest_file: request.release_manifest_file.clone(),
                 })?,
         )
     }
@@ -307,6 +322,7 @@ impl<R: OfflineUpgradeCommandRunner> OfflineUpgradeDeployment
                 .run_upgrade_command(OfflineUpgradeCommand::Preflight {
                     target_version: request.target_version.clone(),
                     image_digest: request.image_digest.clone(),
+                    release_manifest_file: request.release_manifest_file.clone(),
                 })?,
         )
     }
@@ -586,6 +602,7 @@ mod tests {
         let request = edge_domain::OfflineUpgradeRequest {
             target_version: "v1.2.3".to_string(),
             image_digest: "b".repeat(64),
+            release_manifest_file: Some("/root/release-manifest.json".into()),
             artifact_file: "/root/edge-proxy-1.2.3".to_string(),
             passphrase_file: "/run/secrets/upgrade".to_string(),
         };
@@ -606,10 +623,12 @@ mod tests {
                     artifact_file: "/root/edge-proxy-1.2.3".to_string(),
                     target_version: "v1.2.3".to_string(),
                     image_digest: "b".repeat(64),
+                    release_manifest_file: Some("/root/release-manifest.json".into()),
                 },
                 OfflineUpgradeCommand::Preflight {
                     target_version: "v1.2.3".to_string(),
                     image_digest: "b".repeat(64),
+                    release_manifest_file: Some("/root/release-manifest.json".into()),
                 },
                 OfflineUpgradeCommand::CreateAndVerifyBackup {
                     passphrase_file: "/run/secrets/upgrade".to_string(),
@@ -637,6 +656,7 @@ mod tests {
                 artifact_file: "/root/edge-proxy-1.2.3".to_string(),
                 target_version: "v1.2.3".to_string(),
                 image_digest: "b".repeat(64),
+                release_manifest_file: None,
             })
             .unwrap();
         let backup = match runner
@@ -728,6 +748,28 @@ mod tests {
                 ],
             }]
         );
+    }
+
+    #[test]
+    fn compose_admission_passes_the_verified_release_manifest_path() {
+        let executor = FakeProcessExecutor::default();
+        let mut runner = ComposeUpgradeHelperRunner::new(executor);
+        runner
+            .run_upgrade_command(OfflineUpgradeCommand::AdmitArtifact {
+                artifact_file: "/root/image.tar".to_string(),
+                target_version: "v1.2.3".to_string(),
+                image_digest: "a".repeat(64),
+                release_manifest_file: Some("/root/release-manifest.json".into()),
+            })
+            .unwrap();
+        let invocation = runner.into_inner().invocations.pop().unwrap();
+        assert!(invocation.arguments.ends_with(&[
+            "--image-digest".to_string(),
+            "a".repeat(64),
+            "--release-manifest-file".to_string(),
+            "/root/release-manifest.json".to_string(),
+        ]));
+        assert_eq!(invocation.executable, PathBuf::from(COMPOSE_UPGRADE_HELPER));
     }
 
     #[test]

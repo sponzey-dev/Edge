@@ -590,10 +590,12 @@ pub enum OfflineUpgradeCommand {
         artifact_file: String,
         target_version: String,
         image_digest: String,
+        release_manifest_file: Option<String>,
     },
     Preflight {
         target_version: String,
         image_digest: String,
+        release_manifest_file: Option<String>,
     },
     CreateAndVerifyBackup {
         passphrase_file: String,

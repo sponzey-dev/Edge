@@ -54,7 +54,7 @@ def require_archive(artifacts: Path, filename: str) -> Path:
     return path
 
 
-def validate_inputs(tag: str, commit: str, image: str, created: str) -> None:
+def validate_inputs(tag: str, commit: str, image: str, image_config_digest: str, created: str) -> None:
     if SEMVER_TAG.fullmatch(tag) is None:
         fail("RELEASE_ASSEMBLY_TAG_INVALID", "tag must be vMAJOR.MINOR.PATCH")
     if COMMIT.fullmatch(commit) is None:
@@ -62,6 +62,8 @@ def validate_inputs(tag: str, commit: str, image: str, created: str) -> None:
     image_prefix = f"{IMAGE_REPOSITORY}:{tag}@sha256:"
     if not image.startswith(image_prefix) or SHA256.fullmatch(image[len(image_prefix) :]) is None:
         fail("RELEASE_ASSEMBLY_IMAGE_INVALID", "image must use canonical tag plus immutable sha256 digest")
+    if SHA256.fullmatch(image_config_digest.removeprefix("sha256:")) is None:
+        fail("RELEASE_ASSEMBLY_IMAGE_CONFIG_DIGEST_INVALID", "image config digest must be lowercase sha256")
     try:
         datetime.strptime(created, "%Y-%m-%dT%H:%M:%SZ")
     except ValueError as error:
@@ -105,8 +107,8 @@ def spdx_document(filename: str, digest: str, tag: str, commit: str, platform: s
     }
 
 
-def assemble(artifacts: Path, output: Path, tag: str, commit: str, image: str, created: str) -> dict:
-    validate_inputs(tag, commit, image, created)
+def assemble(artifacts: Path, output: Path, tag: str, commit: str, image: str, image_config_digest: str, created: str) -> dict:
+    validate_inputs(tag, commit, image, image_config_digest, created)
     if output.exists():
         fail("RELEASE_ASSEMBLY_OUTPUT_EXISTS", "output path already exists")
     parent = output.parent
@@ -142,6 +144,7 @@ def assemble(artifacts: Path, output: Path, tag: str, commit: str, image: str, c
             "artifacts": manifest_artifacts,
             "commit": commit,
             "image": image,
+            "image_config_digest": image_config_digest if image_config_digest.startswith("sha256:") else f"sha256:{image_config_digest}",
             "schema_version": 1,
             "tag": tag,
         }
@@ -166,6 +169,7 @@ def main() -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--image-config-digest", required=True)
     parser.add_argument("--created", required=True)
     arguments = parser.parse_args()
     try:
@@ -175,6 +179,7 @@ def main() -> int:
             arguments.tag,
             arguments.commit,
             arguments.image,
+            arguments.image_config_digest,
             arguments.created,
         )
     except AssemblyError as error:

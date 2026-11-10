@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+# Compose interpolation must come from the fixed runtime manifest, never from
+# inherited shell variables that could override the admitted image identity.
+unset SPONZEY_EDGE_TAG SPONZEY_EDGE_DIGEST SPONZEY_EDGE_IMAGE_CONFIG_DIGEST SPONZEY_EDGE_LOCAL_IMAGE SPONZEY_EDGE_IMAGE_REFERENCE
+
 PROJECT_DIRECTORY=/etc/sponzey-edge/compose
 COMPOSE_FILE=/etc/sponzey-edge/compose/docker-compose.yml
 UPGRADE_COMPOSE_FILE=/etc/sponzey-edge/compose/docker-compose.upgrade.yml
@@ -14,6 +18,7 @@ DOCKER=/usr/bin/docker
 SHA256SUM=/usr/bin/sha256sum
 ROOT_UID=0
 GREP=/usr/bin/grep
+PYTHON3=/usr/bin/python3
 
 fail() {
   echo "$1" >&2
@@ -48,6 +53,43 @@ run_upgrade_compose() {
   "$DOCKER" compose --project-directory "$PROJECT_DIRECTORY" --file "$COMPOSE_FILE" --file "$UPGRADE_COMPOSE_FILE" --env-file "$RUNTIME_ENV_FILE" "$@"
 }
 
+verify_runtime_image() {
+  require_root_owned_artifact "$RUNTIME_ENV_FILE"
+  runtime_tag=$(sed -n 's/^SPONZEY_EDGE_TAG=//p' "$RUNTIME_ENV_FILE")
+  runtime_digest=$(sed -n 's/^SPONZEY_EDGE_DIGEST=//p' "$RUNTIME_ENV_FILE")
+  runtime_config_digest=$(sed -n 's/^SPONZEY_EDGE_IMAGE_CONFIG_DIGEST=//p' "$RUNTIME_ENV_FILE")
+  runtime_local_image=$(sed -n 's/^SPONZEY_EDGE_LOCAL_IMAGE=//p' "$RUNTIME_ENV_FILE")
+  runtime_image_reference=$(sed -n 's/^SPONZEY_EDGE_IMAGE_REFERENCE=//p' "$RUNTIME_ENV_FILE")
+  case "$runtime_tag" in v[0-9]*.[0-9]*.[0-9]*) ;; *) fail "runtime image tag is invalid" ;; esac
+  require_valid_digest "$runtime_digest"
+  runtime_digest=${NORMALIZED_DIGEST#sha256:}
+  expected_image_reference="ghcr.io/sponzey-lab/sponzey-edge:$runtime_tag@sha256:$runtime_digest"
+
+  if [ -n "$runtime_config_digest" ] || [ -n "$runtime_local_image" ]; then
+    require_valid_digest "$runtime_config_digest"
+    runtime_config_digest=$NORMALIZED_DIGEST
+    expected_local_image="ghcr.io/sponzey-lab/sponzey-edge:$runtime_tag"
+    expected_manifest=$(printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\nSPONZEY_EDGE_IMAGE_CONFIG_DIGEST=%s\nSPONZEY_EDGE_LOCAL_IMAGE=%s\nSPONZEY_EDGE_IMAGE_REFERENCE=%s' \
+      "$runtime_tag" "$runtime_digest" "$runtime_config_digest" "$expected_local_image" "$expected_image_reference")
+    [ "$runtime_config_digest" != "" ] && [ "$runtime_local_image" = "$expected_local_image" ] && \
+      [ "$runtime_image_reference" = "$expected_image_reference" ] && [ "$(cat "$RUNTIME_ENV_FILE")" = "$expected_manifest" ] || \
+      fail "runtime image manifest is invalid"
+    image_reference=$expected_local_image
+    expected_image_id=$runtime_config_digest
+  else
+    [ -z "$runtime_local_image" ] || fail "runtime image manifest is invalid"
+    [ -z "$runtime_image_reference" ] || [ "$runtime_image_reference" = "$expected_image_reference" ] || \
+      fail "runtime image manifest is invalid"
+    image_reference=$expected_image_reference
+    expected_image_id=
+  fi
+
+  image_id=$("$DOCKER" image inspect --format '{{.Id}}' "$image_reference") || fail "runtime image is unavailable"
+  if [ -n "$expected_image_id" ] && [ "$image_id" != "$expected_image_id" ]; then
+    fail "runtime image config digest mismatch"
+  fi
+}
+
 require_root_owned_artifact() {
   case "$1" in /*) ;; *) fail "artifact input must be absolute" ;; esac
   [ -f "$1" ] && [ ! -L "$1" ] || fail "artifact input is missing or unsafe"
@@ -66,12 +108,38 @@ shift
 
 case "$command" in
   preflight)
-    [ "$#" -eq 4 ] && [ "$1" = "--version" ] && [ "$3" = "--image-digest" ] || fail "invalid preflight arguments"
+    [ "$#" -eq 6 ] && [ "$1" = "--version" ] && [ "$3" = "--image-digest" ] && [ "$5" = "--release-manifest-file" ] || fail "invalid preflight arguments"
     case "$2" in v[0-9]*.[0-9]*.[0-9]*) ;; *) fail "invalid version" ;; esac
     require_valid_digest "$4"
+    image_digest=$NORMALIZED_DIGEST
+    require_root_owned_artifact "$6"
+    [ -x "$PYTHON3" ] || fail "Python 3 is unavailable"
+    expected_config_digest=$("$PYTHON3" - "$6" "$2" "$image_digest" <<'PY'
+import json
+import re
+import sys
+
+path, version, digest = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as manifest_file:
+        manifest = json.load(manifest_file)
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit("invalid release manifest")
+if not isinstance(manifest, dict):
+    raise SystemExit("invalid release manifest")
+expected_image = f"ghcr.io/sponzey-lab/sponzey-edge:{version}@{digest}"
+config_digest = manifest.get("image_config_digest")
+if manifest.get("schema_version") != 1 or manifest.get("tag") != version or manifest.get("image") != expected_image:
+    raise SystemExit("release manifest image identity mismatch")
+if not isinstance(config_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest) is None:
+    raise SystemExit("release manifest config digest is invalid")
+print(config_digest)
+PY
+    ) || fail "release manifest does not match requested image identity"
     run_compose config --quiet
     umask 077
-    printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s\n' "$2" "${NORMALIZED_DIGEST#sha256:}" "$2" > "$STAGED_ENV_FILE.tmp" || fail "cannot write staged runtime manifest"
+    printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\nSPONZEY_EDGE_IMAGE_CONFIG_DIGEST=%s\nSPONZEY_EDGE_LOCAL_IMAGE=ghcr.io/sponzey-lab/sponzey-edge:%s\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s@%s\n' \
+      "$2" "${image_digest#sha256:}" "$expected_config_digest" "$2" "$2" "$image_digest" > "$STAGED_ENV_FILE.tmp" || fail "cannot write staged runtime manifest"
     chmod 0644 "$STAGED_ENV_FILE.tmp" || fail "cannot set staged runtime manifest mode"
     mv "$STAGED_ENV_FILE.tmp" "$STAGED_ENV_FILE" || fail "cannot publish staged runtime manifest"
     ;;
@@ -81,16 +149,84 @@ case "$command" in
     ;;
   start-ready)
     [ "$#" -eq 0 ] || fail "start-ready takes no arguments"
-    # The staged runtime manifest may select a different immutable image.  Let
-    # Compose recreate the stopped service when its image configuration changes.
+    verify_runtime_image
+    # The admitted local tag may refer to a different image config. Let Compose
+    # recreate the stopped service when its image configuration changes.
     run_compose up --no-build --pull never --detach edge >/dev/null
     run_compose exec -T edge edge-proxy probe ready --admin-bind 127.0.0.1:9443 >/dev/null
     ;;
   admit-artifact)
-    [ "$#" -eq 6 ] && [ "$1" = "--input" ] && [ "$3" = "--version" ] && [ "$5" = "--image-digest" ] || fail "invalid admission arguments"
+    [ "$#" -eq 8 ] && [ "$1" = "--input" ] && [ "$3" = "--version" ] && [ "$5" = "--image-digest" ] && [ "$7" = "--release-manifest-file" ] || fail "invalid admission arguments"
     case "$4" in v[0-9]*.[0-9]*.[0-9]*) ;; *) fail "invalid version" ;; esac
     require_valid_digest "$6"
+    image_digest=$NORMALIZED_DIGEST
     require_root_owned_artifact "$2"
+    require_root_owned_artifact "$8"
+    [ -x "$PYTHON3" ] || fail "Python 3 is unavailable"
+    expected_config_digest=$("$PYTHON3" - "$8" "$4" "$image_digest" <<'PY'
+import json
+import re
+import sys
+
+path, version, digest = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as manifest_file:
+        manifest = json.load(manifest_file)
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit("invalid release manifest")
+if not isinstance(manifest, dict):
+    raise SystemExit("invalid release manifest")
+expected_image = f"ghcr.io/sponzey-lab/sponzey-edge:{version}@{digest}"
+if manifest.get("schema_version") != 1 or manifest.get("tag") != version:
+    raise SystemExit("release manifest version mismatch")
+if manifest.get("image") != expected_image:
+    raise SystemExit("release manifest image digest mismatch")
+config_digest = manifest.get("image_config_digest")
+if not isinstance(config_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", config_digest) is None:
+    raise SystemExit("release manifest config digest is invalid")
+print(config_digest)
+PY
+    ) || fail "release manifest does not match requested image identity"
+    "$PYTHON3" - "$2" "$4" "$expected_config_digest" <<'PY' || fail "image archive does not match verified release manifest"
+import hashlib
+import json
+import re
+import sys
+import tarfile
+from pathlib import PurePosixPath
+
+archive_path, version, expected_digest = sys.argv[1:]
+expected_tag = f"ghcr.io/sponzey-lab/sponzey-edge:{version}"
+try:
+    with tarfile.open(archive_path, "r:*") as archive:
+        manifest_members = [member for member in archive.getmembers() if member.name == "manifest.json"]
+        if len(manifest_members) != 1 or not manifest_members[0].isfile() or manifest_members[0].size > 1048576:
+            raise SystemExit("image archive manifest is invalid")
+        manifest_stream = archive.extractfile(manifest_members[0])
+        if manifest_stream is None:
+            raise SystemExit("image archive manifest is unreadable")
+        images = json.load(manifest_stream)
+        if not isinstance(images, list) or len(images) != 1 or not isinstance(images[0], dict):
+            raise SystemExit("image archive must contain exactly one image")
+        image = images[0]
+        if not isinstance(image.get("RepoTags"), list) or expected_tag not in image["RepoTags"]:
+            raise SystemExit("image archive tag mismatch")
+        config_name = image.get("Config")
+        config_path = PurePosixPath(config_name) if isinstance(config_name, str) else None
+        if config_path is None or config_path.is_absolute() or ".." in config_path.parts or not config_path.parts:
+            raise SystemExit("image archive config path is invalid")
+        config_members = [member for member in archive.getmembers() if member.name == config_path.as_posix()]
+        if len(config_members) != 1 or not config_members[0].isfile() or config_members[0].size > 16777216:
+            raise SystemExit("image archive config is invalid")
+        config_stream = archive.extractfile(config_members[0])
+        if config_stream is None:
+            raise SystemExit("image archive config is unreadable")
+        actual_digest = "sha256:" + hashlib.sha256(config_stream.read()).hexdigest()
+except (OSError, tarfile.TarError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit("image archive is invalid")
+if re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest) is None or actual_digest != expected_digest:
+    raise SystemExit("image archive config digest mismatch")
+PY
     [ -x "$DOCKER" ] || fail "Docker executable is unavailable"
     # The Rust helper runner accepts receipt output only from the backup command.
     # Docker prints a successful load message on stdout, so keep admission quiet.
@@ -101,6 +237,8 @@ case "$command" in
     loaded_revision=$("$DOCKER" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_reference") || fail "loaded artifact tag is unavailable"
     [ "${#loaded_revision}" -eq 40 ] || fail "loaded artifact revision is invalid"
     case "$loaded_revision" in *[!0123456789abcdef]*|'') fail "loaded artifact revision is invalid" ;; esac
+    loaded_image_id=$("$DOCKER" image inspect --format '{{.Id}}' "$image_reference") || fail "loaded artifact tag is unavailable"
+    [ "$loaded_image_id" = "$expected_config_digest" ] || fail "loaded artifact config digest mismatch"
     ;;
   stage-artifact)
     [ "$#" -eq 2 ] && [ "$1" = "--image-digest" ] || fail "invalid stage arguments"
@@ -109,7 +247,11 @@ case "$command" in
     owner=$(stat -c %u "$STAGED_ENV_FILE" 2>/dev/null || stat -f %u "$STAGED_ENV_FILE") || fail "cannot inspect staged runtime manifest owner"
     [ "$owner" = "$ROOT_UID" ] || fail "staged runtime manifest is not root owned"
     staged_tag=$(sed -n 's/^SPONZEY_EDGE_TAG=//p' "$STAGED_ENV_FILE")
-    expected_manifest=$(printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s' "$staged_tag" "${NORMALIZED_DIGEST#sha256:}" "$staged_tag")
+    staged_config_digest=$(sed -n 's/^SPONZEY_EDGE_IMAGE_CONFIG_DIGEST=//p' "$STAGED_ENV_FILE")
+    require_valid_digest "$staged_config_digest"
+    staged_config_digest=$NORMALIZED_DIGEST
+    expected_manifest=$(printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\nSPONZEY_EDGE_IMAGE_CONFIG_DIGEST=%s\nSPONZEY_EDGE_LOCAL_IMAGE=ghcr.io/sponzey-lab/sponzey-edge:%s\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s@sha256:%s' \
+      "$staged_tag" "${NORMALIZED_DIGEST#sha256:}" "$staged_config_digest" "$staged_tag" "$staged_tag" "${NORMALIZED_DIGEST#sha256:}")
     [ "$(cat "$STAGED_ENV_FILE")" = "$expected_manifest" ] || fail "staged runtime manifest digest mismatch"
     ;;
   switch-staged)
@@ -135,6 +277,7 @@ case "$command" in
     require_valid_digest "$previous_digest"
     [ "$NORMALIZED_DIGEST" = "$expected_previous_digest" ] || fail "previous runtime manifest digest mismatch"
     mv "$PREVIOUS_ENV_FILE" "$RUNTIME_ENV_FILE" || fail "cannot restore previous runtime manifest"
+    verify_runtime_image
     run_compose up --no-build --pull never --detach --wait edge >/dev/null
     ;;
   backup-create-verify)
@@ -143,6 +286,7 @@ case "$command" in
     previous_digest=$(sed -n 's/^SPONZEY_EDGE_DIGEST=//p' "$RUNTIME_ENV_FILE")
     require_valid_digest "$previous_digest"
     previous_artifact_digest=$NORMALIZED_DIGEST
+    verify_runtime_image
     run_upgrade_compose run --rm --no-deps edge edge-proxy backup create --data-dir /var/lib/sponzey-edge/data --output "$BACKUP_ARCHIVE" --passphrase-file /run/secrets/upgrade-passphrase >/dev/null
     run_upgrade_compose run --rm --no-deps edge edge-proxy backup verify --input "$BACKUP_ARCHIVE" --passphrase-file /run/secrets/upgrade-passphrase >/dev/null
     [ -x "$SHA256SUM" ] || fail "checksum executable is unavailable"

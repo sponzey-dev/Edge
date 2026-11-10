@@ -9,3 +9,4 @@ install -d -o root -g root -m 0755 /usr/local/libexec/sponzey-edge
 install -o root -g root -m 0644 "$package_dir/docker-compose.yml" /etc/sponzey-edge/compose/docker-compose.yml
 install -o root -g root -m 0644 "$package_dir/docker-compose.upgrade.yml" /etc/sponzey-edge/compose/docker-compose.upgrade.yml
 install -o root -g root -m 0755 "$package_dir/compose-upgrade-helper" /usr/local/libexec/sponzey-edge/compose-upgrade-helper
+install -o root -g root -m 0644 "$package_dir/verify-local-image-config.py" /usr/local/libexec/sponzey-edge/verify-local-image-config.py

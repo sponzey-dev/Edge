@@ -189,9 +189,11 @@ The prepared Compose file remains compatible with the older two-field
 `SPONZEY_EDGE_TAG`/`SPONZEY_EDGE_DIGEST` manifest during the backup phase. New
 runtime manifests retain both the OCI `tag@sha256:digest` provenance and the
 platform `image_config_digest`, while Compose executes the admitted local tag.
-The fixed helper checks the local image ID against the manifest before every
-start, rollback, or recovery start. It atomically changes the runtime manifest
-only after artifact admission and backup.
+The fixed helper checks the config blob exported from the admitted local tag
+against the manifest before every start, rollback, or recovery start. Some
+Docker Engine image stores report a manifest digest as image .Id, so that field
+is not treated as the config digest. The helper atomically changes the runtime
+manifest only after artifact admission and backup.
 
 ```bash
 IMAGE=ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:RELEASE_MANIFEST_IMAGE_SHA256
@@ -213,18 +215,18 @@ sudo install -o root -g root -m 0444 release-manifest.json /root/release-manifes
 
 The fixed helper records the requested OCI index
 digest in the upgrade journal, loads the artifact without a network pull, and
-requires the root-owned verified release manifest to bind the requested
-`tag@sha256:digest` to its platform `image_config_digest`, then checks the
-loaded Docker image config ID against that value and verifies OCI version and
-revision labels. The config ID and OCI index digest are distinct identities.
-Release publication resolves the unique linux/amd64 manifest descriptor from
-the OCI index and records that manifest's `config.digest` directly. The
-manifest binds the platform-specific config ID to the published image
-reference. The runtime manifest keeps the immutable reference as
+requires the root-owned verified release manifest to bind the requested image
+reference to its platform image_config_digest. After load, it exports the
+admitted local tag with docker image save and hashes the config blob against
+that value, then verifies OCI version and revision labels. The config ID and
+OCI index digest are distinct identities. Release publication resolves the
+unique linux/amd64 manifest descriptor from the OCI index and records that
+manifest's config.digest directly. The manifest binds the platform-specific
+config ID to the published image reference. The runtime manifest keeps the immutable reference as
 `tag@sha256:digest`; Compose uses the local tag because Docker does not restore
 registry RepoDigests during archive load. Before any new start, rollback, or
-recovery start, the helper compares the loaded local tag's image config ID with
-the root-owned manifest.
+recovery start, the helper exports the loaded local tag again and compares its
+config blob digest with the root-owned manifest.
 The fixed upgrade-only Compose override runs
 its short-lived backup/verify command as root solely to read that mount; normal
 serving remains non-root. The deployment kind is required so the maintenance

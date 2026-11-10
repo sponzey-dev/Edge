@@ -19,6 +19,7 @@ SHA256SUM=/usr/bin/sha256sum
 ROOT_UID=0
 GREP=/usr/bin/grep
 PYTHON3=/usr/bin/python3
+IMAGE_CONFIG_VERIFIER=/usr/local/libexec/sponzey-edge/verify-local-image-config.py
 
 fail() {
   echo "$1" >&2
@@ -75,18 +76,21 @@ verify_runtime_image() {
       [ "$runtime_image_reference" = "$expected_image_reference" ] && [ "$(cat "$RUNTIME_ENV_FILE")" = "$expected_manifest" ] || \
       fail "runtime image manifest is invalid"
     image_reference=$expected_local_image
-    expected_image_id=$runtime_config_digest
+    expected_config_digest=$runtime_config_digest
   else
     [ -z "$runtime_local_image" ] || fail "runtime image manifest is invalid"
     [ -z "$runtime_image_reference" ] || [ "$runtime_image_reference" = "$expected_image_reference" ] || \
       fail "runtime image manifest is invalid"
     image_reference=$expected_image_reference
-    expected_image_id=
+    expected_config_digest=
   fi
 
-  image_id=$("$DOCKER" image inspect --format '{{.Id}}' "$image_reference") || fail "runtime image is unavailable"
-  if [ -n "$expected_image_id" ] && [ "$image_id" != "$expected_image_id" ]; then
-    fail "runtime image config digest mismatch"
+  if [ -n "$expected_config_digest" ]; then
+    [ -x "$PYTHON3" ] && [ -f "$IMAGE_CONFIG_VERIFIER" ] && [ ! -L "$IMAGE_CONFIG_VERIFIER" ] || fail "image config verifier is unavailable"
+    "$PYTHON3" "$IMAGE_CONFIG_VERIFIER" "$image_reference" "$runtime_local_image" "$expected_config_digest" || \
+      fail "runtime image config digest mismatch"
+  else
+    "$DOCKER" image inspect --format '{{.Id}}' "$image_reference" >/dev/null || fail "runtime image is unavailable"
   fi
 }
 
@@ -237,8 +241,9 @@ PY
     loaded_revision=$("$DOCKER" image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_reference") || fail "loaded artifact tag is unavailable"
     [ "${#loaded_revision}" -eq 40 ] || fail "loaded artifact revision is invalid"
     case "$loaded_revision" in *[!0123456789abcdef]*|'') fail "loaded artifact revision is invalid" ;; esac
-    loaded_image_id=$("$DOCKER" image inspect --format '{{.Id}}' "$image_reference") || fail "loaded artifact tag is unavailable"
-    [ "$loaded_image_id" = "$expected_config_digest" ] || fail "loaded artifact config digest mismatch"
+    [ -x "$PYTHON3" ] && [ -f "$IMAGE_CONFIG_VERIFIER" ] && [ ! -L "$IMAGE_CONFIG_VERIFIER" ] || fail "image config verifier is unavailable"
+    "$PYTHON3" "$IMAGE_CONFIG_VERIFIER" "$image_reference" "$image_reference" "$expected_config_digest" || \
+      fail "loaded artifact config digest mismatch"
     ;;
   stage-artifact)
     [ "$#" -eq 2 ] && [ "$1" = "--image-digest" ] || fail "invalid stage arguments"

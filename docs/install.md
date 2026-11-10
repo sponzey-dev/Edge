@@ -65,8 +65,11 @@ target/release/edge-proxy
 
 Official releases require a tag and matching immutable GHCR digest. Use the
 release's `release-manifest.json` and Linux archive. Pull the pinned image,
-install the manifest root-owned, then let the installer compare the manifest's
-platform config ID with Docker before it writes the runtime identity:
+install the manifest root-owned, then let the installer tag the image locally
+and hash the config blob from `docker image save` against the manifest's
+platform config digest before it writes the runtime identity. Compose keeps the
+immutable OCI reference as provenance and runs the verified local tag so an
+offline `docker image load` remains usable:
 
 ```bash
 IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:RELEASE_MANIFEST_IMAGE_SHA256

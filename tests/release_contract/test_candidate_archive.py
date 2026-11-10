@@ -20,6 +20,7 @@ REQUIRED_FILES = {
     "current.toml", "systemd/sponzey-edge.service", "systemd/install.sh",
     "systemd/uninstall.sh", "systemd/upgrade-helper", "systemd/preflight.sh",
     "compose/compose-upgrade-helper", "compose/install.sh", "compose/prepare-upgrade.sh",
+    "compose/verify-local-image-config.py",
     "compose/docker-compose.upgrade.yml", "compose/docker-compose.yml",
 }
 

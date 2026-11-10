@@ -216,8 +216,10 @@ digest in the upgrade journal, loads the artifact without a network pull, and
 requires the root-owned verified release manifest to bind the requested
 `tag@sha256:digest` to its platform `image_config_digest`, then checks the
 loaded Docker image config ID against that value and verifies OCI version and
-revision labels. The config ID and OCI index digest are distinct identities;
-the manifest binds the platform-specific config ID to the published image
+revision labels. The config ID and OCI index digest are distinct identities.
+Release publication resolves the unique linux/amd64 manifest descriptor from
+the OCI index and records that manifest's `config.digest` directly. The
+manifest binds the platform-specific config ID to the published image
 reference. The runtime manifest keeps the immutable reference as
 `tag@sha256:digest`; Compose uses the local tag because Docker does not restore
 registry RepoDigests during archive load. Before any new start, rollback, or

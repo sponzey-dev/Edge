@@ -251,8 +251,11 @@ jobs:
         shell: bash
         run: |
           image="ghcr.io/sponzey-lab/sponzey-edge:${GITHUB_REF_NAME}@${{ steps.image.outputs.digest }}"
-          config_digest="$(docker image inspect --format '{{.Id}}' "${image}")"
+          amd64_manifest_digest="$(docker buildx imagetools inspect --raw "${image}" | python3 tools/release/resolve_image_config_digest.py amd64-manifest)"
+          amd64_manifest="ghcr.io/sponzey-lab/sponzey-edge@${amd64_manifest_digest}"
+          config_digest="$(docker buildx imagetools inspect --raw "${amd64_manifest}" | python3 tools/release/resolve_image_config_digest.py config)"
           [[ "${config_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${config_digest}" != "${{ steps.image.outputs.digest }}" ]]
           echo "digest=${config_digest}" >> "${GITHUB_OUTPUT}"
 
       - name: Assemble release assets

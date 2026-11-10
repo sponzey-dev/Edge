@@ -114,6 +114,17 @@ class ReleaseManifestContractTest(unittest.TestCase):
                 result = self.validate(root)
                 self.assertIn("RELEASE_IMAGE_CONFIG_DIGEST_INVALID", result.stderr)
 
+    def test_rejects_index_digest_misreported_as_image_config_digest(self) -> None:
+        with self.make_release() as directory:
+            root = Path(directory)
+            manifest_path = root / "release-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["image_config_digest"] = manifest["image"].split("@", 1)[1]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            result = self.validate(root)
+
+        self.assertIn("RELEASE_IMAGE_CONFIG_DIGEST_INVALID", result.stderr)
+
     def test_rejects_checksum_mismatch(self) -> None:
         with self.make_release(corrupt_checksums=True) as directory:
             result = self.validate(Path(directory))

@@ -102,6 +102,12 @@ def validate(manifest_path: Path, artifacts: Path) -> dict[str, object]:
     image_config_digest = manifest.get("image_config_digest")
     if not isinstance(image_config_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", image_config_digest) is None:
         fail("RELEASE_IMAGE_CONFIG_DIGEST_INVALID", "image_config_digest must be a sha256 config digest")
+    image_digest = manifest["image"].split("@", 1)[1]
+    if image_config_digest == image_digest:
+        fail(
+            "RELEASE_IMAGE_CONFIG_DIGEST_INVALID",
+            "image_config_digest must identify the linux/amd64 config, not the OCI index",
+        )
 
     artifact_entries = manifest.get("artifacts")
     if not isinstance(artifact_entries, list):

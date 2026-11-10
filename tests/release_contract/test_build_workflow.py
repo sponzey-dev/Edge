@@ -111,6 +111,12 @@ class BuildWorkflowContractTest(unittest.TestCase):
             self.workflow.index("Assemble release assets"),
         )
 
+    def test_release_manifest_uses_the_linux_amd64_oci_config_digest(self) -> None:
+        self.assertIn("docker buildx imagetools inspect --raw", self.workflow)
+        self.assertIn("tools/release/resolve_image_config_digest.py amd64-manifest", self.workflow)
+        self.assertIn("tools/release/resolve_image_config_digest.py config", self.workflow)
+        self.assertNotIn("config_digest=\"$(docker image inspect --format '{{.Id}}'", self.workflow)
+
     def test_linux_archives_include_the_systemd_install_assets(self) -> None:
         self.assertIn("cp packaging/systemd/sponzey-edge.service dist/systemd/", self.workflow)
         self.assertIn("cp packaging/systemd/install.sh packaging/systemd/uninstall.sh packaging/systemd/upgrade-helper dist/systemd/", self.workflow)

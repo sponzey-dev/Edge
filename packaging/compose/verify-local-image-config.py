@@ -158,17 +158,41 @@ def exported_config_digest(image: str, expected_tag: str, expected_config_digest
             manifest_digest = descriptor.get("digest")
             if not isinstance(manifest_digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", manifest_digest) is None:
                 raise ValueError("OCI archive manifest digest is invalid")
+            descriptor_size = descriptor.get("size")
+            if type(descriptor_size) is not int or descriptor_size <= 0:
+                raise ValueError("OCI archive manifest size is invalid")
             manifest_entry = oci_manifests.get(manifest_digest)
-            if manifest_entry is None or manifest_entry[1] != descriptor.get("size"):
-                raise ValueError("OCI archive manifest is missing or mismatched")
-            image_manifest = manifest_entry[0]
-            config_descriptor = image_manifest.get("config")
-            if (
-                not isinstance(config_descriptor, dict)
-                or config_descriptor.get("digest") != expected_config_digest
-                or config_descriptor.get("size") != oci_config_size
-            ):
-                raise ValueError("OCI manifest config identity mismatch")
+            if manifest_entry is None:
+                # Docker 29 can export an OCI index that points at the original
+                # multi-platform index without including that index blob. Its
+                # Docker compatibility manifest still binds the requested tag
+                # to the exported config blob, so accept that exact fallback.
+                matching_config_manifests = [
+                    image_manifest
+                    for image_manifest, _ in oci_manifests.values()
+                    if isinstance(image_manifest.get("config"), dict)
+                    and image_manifest["config"].get("digest") == expected_config_digest
+                    and image_manifest["config"].get("size") == oci_config_size
+                ]
+                if (
+                    descriptor.get("mediaType") != "application/vnd.oci.image.index.v1+json"
+                    or legacy_manifest_count != 1
+                    or legacy_expected_tag != expected_config_blob
+                    or oci_config_digest != expected_config_digest
+                    or len(matching_config_manifests) != 1
+                ):
+                    raise ValueError("OCI archive manifest is missing or mismatched")
+            else:
+                if manifest_entry[1] != descriptor_size:
+                    raise ValueError("OCI archive manifest is missing or mismatched")
+                image_manifest = manifest_entry[0]
+                config_descriptor = image_manifest.get("config")
+                if (
+                    not isinstance(config_descriptor, dict)
+                    or config_descriptor.get("digest") != expected_config_digest
+                    or config_descriptor.get("size") != oci_config_size
+                ):
+                    raise ValueError("OCI manifest config identity mismatch")
             config_digest = oci_config_digest
         elif legacy_manifest_count:
             if legacy_config_count != 1 or legacy_config_digest is None:

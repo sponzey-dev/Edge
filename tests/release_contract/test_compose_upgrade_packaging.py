@@ -97,6 +97,67 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         return config_digest
 
     @staticmethod
+    def write_docker29_export_archive(path: Path, version: str = "v1.2.3") -> str:
+        config = b'{"architecture":"amd64","os":"linux","config":{}}'
+        config_digest = "sha256:" + hashlib.sha256(config).hexdigest()
+        config_path = "blobs/sha256/" + config_digest.removeprefix("sha256:")
+        legacy_manifest = json.dumps([{
+            "Config": config_path,
+            "RepoTags": [f"ghcr.io/sponzey-lab/sponzey-edge:{version}"],
+            "Layers": [],
+        }]).encode()
+        child_manifest = json.dumps({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": config_digest,
+                "size": len(config),
+            },
+            "layers": [],
+        }, separators=(",", ":")).encode()
+        child_digest = "sha256:" + hashlib.sha256(child_manifest).hexdigest()
+        unavailable_index = json.dumps({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [{
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": child_digest,
+                "size": len(child_manifest),
+                "platform": {"architecture": "amd64", "os": "linux"},
+            }],
+        }, separators=(",", ":")).encode()
+        assert len(unavailable_index) <= 1609
+        unavailable_index += b" " * (1609 - len(unavailable_index))
+        index = json.dumps({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [{
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "digest": "sha256:" + hashlib.sha256(unavailable_index).hexdigest(),
+                "size": len(unavailable_index),
+                "annotations": {"org.opencontainers.image.ref.name": version},
+            }],
+        }, separators=(",", ":")).encode()
+        layout = b'{"imageLayoutVersion":"1.0.0"}'
+        with tarfile.open(path, "w") as archive:
+            for name in ("blobs/", "blobs/sha256/"):
+                member = tarfile.TarInfo(name)
+                member.type = tarfile.DIRTYPE
+                archive.addfile(member)
+            for name, payload in (
+                (config_path, config),
+                ("blobs/sha256/" + child_digest.removeprefix("sha256:"), child_manifest),
+                ("index.json", index),
+                ("oci-layout", layout),
+                ("manifest.json", legacy_manifest),
+            ):
+                member = tarfile.TarInfo(name)
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+        return config_digest
+
+    @staticmethod
     def write_runtime_manifest(path: Path, version: str, image_digest: str, config_digest: str) -> None:
         path.write_text(
             f"SPONZEY_EDGE_TAG={version}\n"
@@ -214,6 +275,47 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 cwd=ROOT,
             )
             self.assertEqual(hybrid.returncode, 0, hybrid.stderr)
+
+    def test_local_image_config_verifier_accepts_docker29_exported_oci_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source_archive = temporary / "docker-29-export.tar"
+            expected_digest = self.write_docker29_export_archive(source_archive)
+            fake_docker = temporary / "docker"
+            fake_docker.write_text(
+                "#!/bin/sh\n"
+                "[ \"$1\" = image ] && [ \"$2\" = save ] && [ \"$#\" -eq 3 ] || exit 38\n"
+                "cat \"$IMAGE_ARCHIVE\"\n",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            verifier = temporary / "verify-local-image-config.py"
+            verifier.write_text(
+                self.image_config_verifier.read_text(encoding="utf-8").replace(
+                    'DOCKER = "/usr/bin/docker"', f'DOCKER = "{fake_docker}"'
+                ),
+                encoding="utf-8",
+            )
+            image = "ghcr.io/sponzey-lab/sponzey-edge:v1.2.3"
+            environment = {"IMAGE_ARCHIVE": str(source_archive)}
+
+            valid = subprocess.run(
+                [sys.executable, str(verifier), image, image, expected_digest],
+                capture_output=True,
+                text=True,
+                env=environment,
+                cwd=ROOT,
+            )
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+
+            wrong_digest = subprocess.run(
+                [sys.executable, str(verifier), image, image, "sha256:" + "b" * 64],
+                capture_output=True,
+                text=True,
+                env=environment,
+                cwd=ROOT,
+            )
+            self.assertNotEqual(wrong_digest.returncode, 0)
 
     def test_official_compose_reads_only_the_fixed_runtime_image_manifest(self) -> None:
         helper = self.helper.read_text(encoding="utf-8")

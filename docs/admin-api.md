@@ -29,9 +29,11 @@ boundary tests. It also has a framework-free HTTP request/response contract
 router for status and mutation auth preflight, plus raw HTTP parse/render
 helpers for the bin-bound listener. `apps/edge-proxy` binds the Admin
 HTTP listener during config-file startup for status, login/logout, and mutation
-auth preflight. Login emits a secure/httpOnly/sameSite session cookie and CSRF
-token. Setup writes the first admin password hash through `SecretStore` when no
-hash exists. `POST /api/v1/proxy-hosts` has a framework-free HTTP contract
+auth preflight. Login emits a secure/httpOnly/sameSite session cookie and a
+separate 256-bit operating-system-random session ID and CSRF token. Tokens are
+not derived from process-local counters, so a restart does not reissue prior
+credentials. Setup writes the first admin password hash through `SecretStore`
+when no hash exists. `POST /api/v1/proxy-hosts` has a framework-free HTTP contract
 handler that verifies session/CSRF, parses the JSON DTO, validates the next
 config, and calls `ConfigLifecycle::apply_with_core`. The bin-bound TCP listener
 now binds this create endpoint to file revisions and the `run_snapshot_http_proxy_mio`
@@ -79,6 +81,13 @@ actions, or output locations; an authenticated request with a nonempty body is
 rejected. A later successful collection atomically replaces the previous
 `latest.tar`; a failed collection preserves it. Its receipt contains only `archive_id`,
 `digest_sha256`, collected/omitted logical artifact names, and `total_bytes`.
+After authentication, the server refreshes six fixed sources: version/target
+architecture, numeric masked-config counts, a bounded in-memory log summary,
+health counts, resource pressure/counters, and the durable-audit head/admission
+state. The log summary contains aggregate status codes, total duration, buffer
+counts, and drop count only; it excludes request IDs, paths, headers, bodies,
+error messages, and secret values. Unwired health/resource/audit readers are
+represented as unavailable rather than being read from arbitrary files.
 Archive paths, private keys, secrets, request/response bodies, headers,
 cookies, and queries are never returned. Collection failures use the stable
 error response and leave no caller-controlled data path to recover.

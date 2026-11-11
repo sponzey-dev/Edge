@@ -124,6 +124,12 @@ Run the 30-second functional gate before collecting a performance profile:
 node tests/performance/bin/run.mjs smoke
 ```
 
+This is an Edge-to-Node functional smoke and may run in a developer Docker
+environment; it is not candidate performance evidence. For this project, run
+published-candidate `baseline` and `soak` profiles on the Linux host configured
+through `.env` `TEST_SERVER_` values. Run the host-side runner from a clean
+checkout on that host.
+
 Run a real profile only from a clean Git worktree. The runner rejects tracked or
 untracked source changes before it creates an artifact, prepares test PKI,
 builds the image, or changes the performance Compose services; `--dry-run`
@@ -131,7 +137,7 @@ remains side-effect free.
 
 The default source-build profiles are characterization, not evidence that a published image was
 measured. To measure a candidate, first make its immutable `ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:<digest>`
-reference available in the local Docker image store, then run on the intended clean Linux host:
+reference available in the TEST_SERVER Docker image store, then run on that host:
 
 ```bash
 node tests/performance/bin/run.mjs baseline --candidate-image 'ghcr.io/sponzey-lab/sponzey-edge:vX.Y.Z@sha256:<digest>'

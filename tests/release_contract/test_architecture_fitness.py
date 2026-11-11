@@ -77,7 +77,8 @@ class ArchitectureFitnessContractTest(unittest.TestCase):
         self.assertIn("Architecture fitness", workflow)
         self.assertIn("python3 tools/release/check_architecture.py --workspace .", workflow)
         self.assertLess(
-            workflow.index("Architecture fitness"), workflow.index("Build release binary")
+            workflow.index("Architecture fitness"),
+            workflow.index("Build x86_64 Linux release binary with baseline CPU flags"),
         )
 
     def test_operational_docs_name_the_current_fitness_command(self) -> None:

@@ -499,6 +499,7 @@ dependencies = [
  "edge-application",
  "edge-domain",
  "edge-ports",
+ "getrandom 0.3.4",
  "serde_json",
 ]
 

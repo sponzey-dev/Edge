@@ -43,6 +43,15 @@ archive atomically; a failed collection leaves the previous archive in place.
 The API/UI expose only archive identity, digest,
 artifact summary, omissions, and size—never the archive path or source contents.
 
+After session and CSRF validation, each request refreshes six fixed diagnostic
+sources: build version/architecture, masked configuration counts, aggregate
+counts from the bounded in-memory access/error buffers, health availability
+counts, resource pressure/counters, and the durable-audit ledger head/admission
+state. The log summary omits request identifiers, paths, methods, headers, bodies,
+and free-form error text. Unwired health/resource/audit readers are marked
+unavailable. Source files and the archive use owner-only file permissions inside
+private support directories.
+
 For an offline deep collection, acquire the data-directory exclusive lock first.
 Missing, symlinked, stale, or bound-exceeding artifacts are omitted; secret-bearing
 content fails collection before publication. This is a diagnostic artifact, not a

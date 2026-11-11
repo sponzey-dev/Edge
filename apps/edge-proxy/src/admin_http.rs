@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -56,11 +57,12 @@ use edge_domain::{
 #[cfg(test)]
 use edge_ports::RuntimeUpstreamStatusPublisher;
 use edge_ports::{
-    AcmeClient, AuditEvent, AuditSink, CertificateMaterialValidator, CertificateStore,
-    ConfigRevisionRepository, CoreCommandClient, HealthStatusReader, Http01ChallengeProbe,
-    Http01ChallengeResponder, Http01ChallengeStore, LogSink, OperationalRuntimeStatusReader,
-    RuntimeResourceStatusReader, RuntimeResourceStatusSnapshot, RuntimeUpstreamStatusReader,
-    RuntimeUpstreamStatusSnapshot,
+    AcmeClient, AuditAdmissionController, AuditEvent, AuditLedgerReader, AuditSink,
+    CertificateMaterialValidator, CertificateStore, ConfigRevisionRepository, CoreCommandClient,
+    HealthStatusReader, Http01ChallengeProbe, Http01ChallengeResponder, Http01ChallengeStore,
+    LogSink, OperationalRuntimeStatusReader, RuntimeResourceStatusReader,
+    RuntimeResourceStatusSnapshot, RuntimeUpstreamStatusReader, RuntimeUpstreamStatusSnapshot,
+    SupportBundleCollector, SupportBundleReport, SupportBundleRequest,
 };
 
 const DEFAULT_MAX_ADMIN_REQUEST_BYTES: usize = 512 * 1024;
@@ -355,6 +357,164 @@ pub struct AdminHttpRuntimeWiring<C, A, P> {
 pub struct AdminHttpSupportBundlePaths {
     pub source_root: PathBuf,
     pub output: PathBuf,
+}
+
+struct RuntimeSupportBundleCollector<'a> {
+    state: &'a AdminHttpServerState,
+    files: FileSupportBundleCollector,
+}
+
+impl SupportBundleCollector for RuntimeSupportBundleCollector<'_> {
+    fn collect_support_bundle(
+        &mut self,
+        request: SupportBundleRequest,
+    ) -> Result<SupportBundleReport, edge_domain::AppError> {
+        self.files
+            .publish_sources(&runtime_support_sources(self.state)?)?;
+        self.files.collect_support_bundle(request)
+    }
+}
+
+fn runtime_support_sources(
+    state: &AdminHttpServerState,
+) -> Result<Vec<(edge_domain::SupportBundleArtifact, Vec<u8>)>, edge_domain::AppError> {
+    use edge_domain::SupportBundleArtifact as Artifact;
+
+    let snapshot = state.snapshot.lock().map_err(|_| {
+        edge_domain::AppError::new(ErrorCode::InternalBug, "support snapshot is unavailable")
+    })?;
+    let version_manifest = format!(
+        "version = \"{}\"\ntarget_arch = \"{}\"\n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::ARCH
+    );
+    let upstream_count: usize = snapshot
+        .services
+        .iter()
+        .map(|service| service.upstreams.len())
+        .sum();
+    let masked_config = format!(
+        "schema_version = {}\nlisteners = {}\nroutes = {}\nservices = {}\nupstreams = {}\ncertificate_resolvers = {}\n",
+        snapshot.schema_version,
+        snapshot.listeners.len(),
+        snapshot.routes.len(),
+        snapshot.services.len(),
+        upstream_count,
+        snapshot.certificate_resolvers.len()
+    );
+    drop(snapshot);
+
+    let access = state
+        .access_logs
+        .lock()
+        .map_err(|_| {
+            edge_domain::AppError::new(
+                ErrorCode::InternalBug,
+                "support access summary is unavailable",
+            )
+        })?
+        .recent();
+    let errors = state
+        .error_logs
+        .lock()
+        .map_err(|_| {
+            edge_domain::AppError::new(
+                ErrorCode::InternalBug,
+                "support error summary is unavailable",
+            )
+        })?
+        .recent();
+    let mut statuses = BTreeMap::<u16, u64>::new();
+    let mut duration_total_ms = 0_u64;
+    for event in &access {
+        *statuses.entry(event.status_code).or_default() += 1;
+        duration_total_ms = duration_total_ms.saturating_add(event.duration_ms);
+    }
+    let now = current_epoch_seconds().map_err(|_| {
+        edge_domain::AppError::new(
+            ErrorCode::InternalBug,
+            "support snapshot clock is unavailable",
+        )
+    })?;
+    let status_counts = statuses
+        .iter()
+        .map(|(code, count)| format!("\"{code}\":{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let product_log = format!(
+        "{{\"observed_epoch_seconds\":{now},\"event\":\"support_snapshot\",\"buffer_scope\":\"bounded_in_memory_ring\",\"buffered_access_events\":{},\"status_codes\":{{{status_counts}}},\"duration_total_ms\":{duration_total_ms},\"buffered_error_events\":{},\"dropped_log_events\":{}}}\n",
+        access.len(),
+        errors.len(),
+        state.log_drop_counter.load(Ordering::Relaxed)
+    );
+
+    let health_summary = match state.health_status.read_health_status() {
+        Ok(snapshot) => {
+            let mut counts = [0_u64; 4];
+            for availability in snapshot.entries.values() {
+                let index = match availability {
+                    edge_domain::UpstreamAvailability::Disabled => 0,
+                    edge_domain::UpstreamAvailability::Unknown => 1,
+                    edge_domain::UpstreamAvailability::Healthy => 2,
+                    edge_domain::UpstreamAvailability::Unhealthy => 3,
+                };
+                counts[index] += 1;
+            }
+            format!(
+                "{{\"available\":true,\"generation\":{},\"upstreams_disabled\":{},\"upstreams_unknown\":{},\"upstreams_healthy\":{},\"upstreams_unhealthy\":{}}}\n",
+                snapshot.generation.0, counts[0], counts[1], counts[2], counts[3]
+            )
+        }
+        Err(_) => "{\"available\":false}\n".to_string(),
+    };
+
+    let resource_summary = match state.resource_status.read_resource_status() {
+        Ok(snapshot) => format!(
+            "{{\"available\":true,\"generation\":{},\"used_payload_bytes\":{},\"payload_limit_bytes\":{},\"active_connections\":{},\"pressure\":\"{}\"}}\n",
+            snapshot.generation,
+            snapshot.used_payload_bytes,
+            snapshot.payload_limit_bytes,
+            snapshot.active_connections,
+            snapshot.pressure.as_str()
+        ),
+        Err(_) => "{\"available\":false}\n".to_string(),
+    };
+
+    let audit_summary = match &state.durable_audit {
+        Some((ledger, admission)) => match ledger.head() {
+            Ok(head) => format!(
+                "{{\"available\":true,\"generation\":{},\"sequence\":{},\"admission_state\":\"{}\"}}\n",
+                head.generation,
+                head.sequence,
+                audit_admission_label(admission.state())
+            ),
+            Err(_) => format!(
+                "{{\"available\":false,\"admission_state\":\"{}\"}}\n",
+                audit_admission_label(admission.state())
+            ),
+        },
+        None => "{\"available\":false,\"admission_state\":\"unconfigured\"}\n".to_string(),
+    };
+
+    Ok(vec![
+        (Artifact::VersionManifest, version_manifest.into_bytes()),
+        (Artifact::MaskedConfig, masked_config.into_bytes()),
+        (Artifact::BoundedProductLog, product_log.into_bytes()),
+        (Artifact::HealthSummary, health_summary.into_bytes()),
+        (Artifact::ResourceSummary, resource_summary.into_bytes()),
+        (Artifact::AuditSummary, audit_summary.into_bytes()),
+    ])
+}
+
+fn audit_admission_label(state: edge_domain::AuditAdmissionState) -> &'static str {
+    match state {
+        edge_domain::AuditAdmissionState::Starting => "starting",
+        edge_domain::AuditAdmissionState::Verifying => "verifying",
+        edge_domain::AuditAdmissionState::Reconciling => "reconciling",
+        edge_domain::AuditAdmissionState::Healthy => "healthy",
+        edge_domain::AuditAdmissionState::Degraded => "degraded",
+        edge_domain::AuditAdmissionState::FailedClosed => "failed_closed",
+    }
 }
 
 impl AdminHttpServerState {
@@ -689,7 +849,13 @@ fn handle_admin_http_stream(mut stream: TcpStream, state: &AdminHttpServerState)
             Some(paths) => handle_support_bundle_http(
                 &request,
                 &sessions,
-                FileSupportBundleCollector::new_online(&paths.source_root, &paths.output),
+                RuntimeSupportBundleCollector {
+                    state,
+                    files: FileSupportBundleCollector::new_online(
+                        &paths.source_root,
+                        &paths.output,
+                    ),
+                },
             ),
             None => AdminHttpResponse::from_error(
                 503,
@@ -1579,6 +1745,11 @@ mod tests {
     use std::net::{Shutdown, TcpListener, TcpStream};
     use std::path::PathBuf;
 
+    thread_local! {
+        static TEST_LOGIN_CREDENTIALS: std::cell::RefCell<std::collections::HashMap<usize, (String, String)>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+
     fn snapshot() -> ConfigSnapshot {
         parse_mvp_config(
             include_str!("../../../examples/minimal.toml"),
@@ -1964,33 +2135,136 @@ mod tests {
         let root = temp_root("support-endpoint");
         let support = root.join("support");
         std::fs::create_dir_all(&support).unwrap();
-        std::fs::write(support.join("version.manifest"), "version=v1.2.3\n").unwrap();
+        let mut access_logs = RecentAccessLogBuffer::new(2);
+        access_logs.push(AccessLogEvent {
+            request_id: "private-request-id".into(),
+            revision_id: "private-revision-id".into(),
+            route_id: Some("private-route-id".into()),
+            upstream_id: Some("private-upstream-id".into()),
+            status_code: 200,
+            duration_ms: 17,
+            scheme: "https".into(),
+            method: "GET".into(),
+            path: "/private/path?token=never-export".into(),
+        });
+        let mut error_logs = RecentErrorBuffer::new(2);
+        error_logs.push(RecentErrorEvent {
+            request_id: Some("private-error-request-id".into()),
+            error_code: "PRIVATE_ERROR_CODE".into(),
+            message: "private-error-message-never-export".into(),
+        });
+        let resource_status = SharedRuntimeResourceStatus::default();
+        assert_eq!(
+            resource_status.try_publish_resource_status(RuntimeResourceStatusSnapshot {
+                revision_id: ConfigRevisionId::new("private-resource-revision"),
+                generation: 4,
+                used_payload_bytes: 8_192,
+                payload_limit_bytes: 128 * 1024 * 1024,
+                active_connections: 2,
+                pressure: edge_ports::RuntimeResourcePressure::Pressured,
+            }),
+            RuntimeResourceStatusPublishOutcome::Accepted
+        );
         let state = AdminHttpServerState::new(
             snapshot(),
             Some("hash".to_string()),
             FileSecretStore::new(root.join("secrets")),
         )
+        .with_observability(MemoryCertificateStore::default(), access_logs, error_logs)
+        .with_health_status_reader(FixedHealthStatusReader)
+        .with_resource_status_reader(Arc::new(resource_status))
         .with_support_bundle_paths(AdminHttpSupportBundlePaths {
             source_root: support.clone(),
             output: support.join("latest.tar"),
         });
-        state
-            .sessions
-            .lock()
-            .unwrap()
-            .insert(edge_admin_api::Session {
-                session_id: "session-1".into(),
-                csrf_token: "csrf-1".into(),
-            });
         let unauthorized = request_once_with_state(
             state.clone(),
             "POST /api/v1/support-bundles HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-length: 0\r\n\r\n",
         );
         assert!(unauthorized.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
-        let response = request_once_with_state(state, "POST /api/v1/support-bundles HTTP/1.1\r\nhost: 127.0.0.1\r\ncookie: sponzey_session=session-1\r\nx-csrf-token: csrf-1\r\ncontent-length: 0\r\n\r\n");
+        let login = request_once_with_state(
+            state.clone(),
+            "POST /api/v1/login HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-length: 24\r\n\r\n{\"password_hash\":\"hash\"}",
+        );
+        assert!(login.starts_with("HTTP/1.1 200 OK\r\n"));
+        let missing_csrf = request_once_with_state(
+            state.clone(),
+            "POST /api/v1/support-bundles HTTP/1.1\r\nhost: 127.0.0.1\r\ncookie: sponzey_session=session-1\r\ncontent-length: 0\r\n\r\n",
+        );
+        assert!(missing_csrf.starts_with("HTTP/1.1 403 Forbidden\r\n"));
+        assert!(!support.join("version.manifest").exists());
+        let response = request_once_with_state(
+            state.clone(),
+            "POST /api/v1/support-bundles HTTP/1.1\r\nhost: 127.0.0.1\r\ncookie: sponzey_session=session-1\r\nx-csrf-token: csrf-1\r\ncontent-length: 0\r\n\r\n",
+        );
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.contains("archive_id"));
         assert!(!response.contains(&support.display().to_string()));
+        assert!(response.contains(
+            "\"collected_artifacts\":[\"version_manifest\",\"masked_config\",\"bounded_product_log\",\"health_summary\",\"resource_summary\",\"audit_summary\"]"
+        ));
+        for artifact in [
+            "version.manifest",
+            "config/masked.toml",
+            "logs/product.log",
+            "health.json",
+            "resource.json",
+            "audit-summary.json",
+        ] {
+            assert!(
+                support.join(artifact).is_file(),
+                "missing generated source: {artifact}"
+            );
+        }
+        assert!(support.join("latest.tar").is_file());
+        assert!(std::fs::metadata(support.join("latest.tar")).unwrap().len() > 1024);
+        let product_log = std::fs::read_to_string(support.join("logs/product.log")).unwrap();
+        assert!(product_log.contains("\"buffered_access_events\":1"));
+        assert!(product_log.contains("\"status_codes\":{\"200\":1}"));
+        assert!(product_log.contains("\"buffered_error_events\":1"));
+        for private_value in [
+            "private-request-id",
+            "private-revision-id",
+            "private-route-id",
+            "private-upstream-id",
+            "/private/path",
+            "never-export",
+            "private-error-request-id",
+            "PRIVATE_ERROR_CODE",
+            "private-error-message-never-export",
+        ] {
+            assert!(!product_log.contains(private_value));
+        }
+        let masked_config = std::fs::read_to_string(support.join("config/masked.toml")).unwrap();
+        assert!(masked_config.contains("schema_version = "));
+        assert!(masked_config.contains("routes = "));
+        assert!(!masked_config.contains("private-route-id"));
+        let health = std::fs::read_to_string(support.join("health.json")).unwrap();
+        assert!(health.contains("\"upstreams_healthy\":1"));
+        assert!(!health.contains("app-a"));
+        let resource = std::fs::read_to_string(support.join("resource.json")).unwrap();
+        assert!(resource.contains("\"used_payload_bytes\":8192"));
+        assert!(resource.contains("\"pressure\":\"pressured\""));
+        assert!(!resource.contains("private-resource-revision"));
+        let audit = std::fs::read_to_string(support.join("audit-summary.json")).unwrap();
+        assert!(audit.contains("\"available\":false"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let archive_path = support.join("latest.tar");
+            let prior_archive = std::fs::read(&archive_path).unwrap();
+            let outside = root.join("outside-support");
+            std::fs::create_dir(&outside).unwrap();
+            std::fs::remove_dir_all(support.join("config")).unwrap();
+            symlink(&outside, support.join("config")).unwrap();
+            let rejected = request_once_with_state(
+                state,
+                "POST /api/v1/support-bundles HTTP/1.1\r\nhost: 127.0.0.1\r\ncookie: sponzey_session=session-1\r\nx-csrf-token: csrf-1\r\ncontent-length: 0\r\n\r\n",
+            );
+            assert!(rejected.starts_with("HTTP/1.1 422 Error\r\n"));
+            assert_eq!(std::fs::read(&archive_path).unwrap(), prior_archive);
+            assert!(!outside.join("masked.toml").exists());
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2953,10 +3227,7 @@ mod tests {
         );
 
         assert!(login.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(login.contains(
-            "set-cookie: sponzey_session=session-1; Path=/; HttpOnly; Secure; SameSite=Strict\r\n"
-        ));
-        assert!(login.contains("\"csrf_token\":\"csrf-1\""));
+        assert_random_admin_login_tokens(&login);
 
         let logout = request_once_with_state(
             state,
@@ -2992,7 +3263,7 @@ mod tests {
         );
 
         assert!(login.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(login.contains("\"csrf_token\":\"csrf-1\""));
+        assert_random_admin_login_tokens(&login);
         let records =
             edge_ports::AuditLedgerReader::query(&ledger, &edge_domain::AuditQuery::default())
                 .unwrap()
@@ -3418,6 +3689,28 @@ mod tests {
     }
 
     fn request_once_with_state(state: AdminHttpServerState, request: &str) -> String {
+        // Existing endpoint tests use session-1/csrf-1 as readable placeholders. Resolve those
+        // placeholders from the latest successful login for this state so tests exercise the
+        // real random credentials without duplicating cookie parsing in every request fixture.
+        let state_key = Arc::as_ptr(&state.sessions) as usize;
+        let request = TEST_LOGIN_CREDENTIALS.with(|credentials| {
+            let credentials = credentials.borrow();
+            if request.contains("session-1") || request.contains("csrf-1") {
+                if let Some((session_id, csrf_token)) = credentials.get(&state_key) {
+                    let valid_for_state = state
+                        .sessions
+                        .lock()
+                        .unwrap()
+                        .verify_csrf(session_id, csrf_token);
+                    if valid_for_state {
+                        return request
+                            .replace("session-1", session_id)
+                            .replace("csrf-1", csrf_token);
+                    }
+                }
+            }
+            request.to_string()
+        });
         assert!(
             request_is_complete(request.as_bytes()),
             "test Admin HTTP request must be complete before sending"
@@ -3425,8 +3718,19 @@ mod tests {
 
         let mut last_error = None;
         for attempt in 0..3 {
-            match request_once_with_state_attempt(state.clone(), request) {
-                Ok(response) => return response,
+            match request_once_with_state_attempt(state.clone(), &request) {
+                Ok(response) => {
+                    if request.starts_with("POST /api/v1/login ")
+                        && response.starts_with("HTTP/1.1 200 OK\r\n")
+                    {
+                        if let Some(credentials) = test_login_credentials(&response) {
+                            TEST_LOGIN_CREDENTIALS.with(|saved| {
+                                saved.borrow_mut().insert(state_key, credentials);
+                            });
+                        }
+                    }
+                    return response;
+                }
                 Err((response, error))
                     if response.is_empty()
                         && matches!(
@@ -3457,6 +3761,32 @@ mod tests {
                 .map(|error| error.to_string())
                 .unwrap_or_else(|| "unknown error".to_string())
         );
+    }
+
+    fn test_login_credentials(response: &str) -> Option<(String, String)> {
+        let session_id = response.lines().find_map(|line| {
+            line.strip_prefix("set-cookie: sponzey_session=")
+                .and_then(|value| value.split(';').next())
+                .map(str::to_string)
+        })?;
+        let body = response.split_once("\r\n\r\n")?.1;
+        let csrf_token = body
+            .split_once("\"csrf_token\":\"")?
+            .1
+            .split('"')
+            .next()?
+            .to_string();
+        Some((session_id, csrf_token))
+    }
+
+    fn assert_random_admin_login_tokens(response: &str) {
+        let (session_id, csrf_token) =
+            test_login_credentials(response).expect("login returns session and CSRF credentials");
+        let is_random_token =
+            |value: &str| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+        assert!(is_random_token(&session_id));
+        assert!(is_random_token(&csrf_token));
+        assert_ne!(session_id, csrf_token);
     }
 
     fn request_once_with_state_attempt(

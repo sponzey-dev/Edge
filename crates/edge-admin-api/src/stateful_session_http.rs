@@ -106,7 +106,14 @@ fn handle_login(
             AdminHttpResponse::json(200, body)
                 .with_header("set-cookie", session_cookie_header(&session.session_id))
         }
-        Err(error) => error_response(401, error, &request.request_id),
+        Err(error) => {
+            let status = if error.code == ErrorCode::AdminInvalidCredentials {
+                401
+            } else {
+                500
+            };
+            error_response(status, error, &request.request_id)
+        }
     }
 }
 

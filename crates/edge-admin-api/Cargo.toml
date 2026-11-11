@@ -10,6 +10,7 @@ rust-version.workspace = true
 edge-application = { path = "../edge-application" }
 edge-domain = { path = "../edge-domain" }
 edge-ports = { path = "../edge-ports" }
+getrandom = "0.3.4"
 serde_json.workspace = true
 
 [lib]

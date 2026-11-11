@@ -1,6 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use edge_domain::{
@@ -22,6 +23,46 @@ pub struct FileSupportBundleCollector {
 }
 
 impl FileSupportBundleCollector {
+    /// Atomically publishes only known support sources under the fixed private layout.
+    /// The caller supplies already-redacted summaries; arbitrary paths are not accepted.
+    pub fn publish_sources(
+        &self,
+        sources: &[(SupportBundleArtifact, Vec<u8>)],
+    ) -> Result<(), AppError> {
+        ensure_private_support_directory(&self.root)?;
+        let mut seen = Vec::new();
+        let mut total_bytes = 0_u64;
+        for (artifact, contents) in sources {
+            if seen.contains(artifact) || contents.len() > 512 * 1024 {
+                return Err(support_error("support source set is invalid"));
+            }
+            seen.push(*artifact);
+            total_bytes = total_bytes.saturating_add(contents.len() as u64);
+            if total_bytes > edge_domain::SupportBundleBounds::SAFE_DEFAULT.max_total_bytes {
+                return Err(support_error("support source set exceeds its bound"));
+            }
+            let (relative, _) = Self::source_for(*artifact);
+            let target = self.root.join(relative);
+            if relative.starts_with("config/") {
+                ensure_private_support_child(&self.root, "config")?;
+            } else if relative.starts_with("logs/") {
+                ensure_private_support_child(&self.root, "logs")?;
+            }
+            match fs::symlink_metadata(&target) {
+                Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => return Err(support_error("support source path is unsafe")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(support_error("support source path is unavailable")),
+            }
+        }
+
+        for (artifact, contents) in sources {
+            let (relative, _) = Self::source_for(*artifact);
+            publish_private_support_source(&self.root.join(relative), contents)?;
+        }
+        Ok(())
+    }
+
     pub fn new_online(root: impl AsRef<Path>, output: impl AsRef<Path>) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
@@ -58,6 +99,86 @@ impl FileSupportBundleCollector {
             SupportBundleArtifact::AuditSummary => ("audit-summary.json", "audit-summary.json"),
         }
     }
+}
+
+fn support_error(message: &'static str) -> AppError {
+    AppError::new(ErrorCode::SupportBundleReportInvalid, message)
+}
+
+fn ensure_private_support_directory(path: &Path) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| support_error("support directory is unavailable"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(support_error("support directory is unsafe"));
+    }
+    set_private_support_directory_permissions(path)
+        .map_err(|_| support_error("support directory permissions failed"))
+}
+
+fn ensure_private_support_child(root: &Path, child: &'static str) -> Result<(), AppError> {
+    let path = root.join(child);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err(support_error("support source directory is unsafe")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&path)
+                .map_err(|_| support_error("support source directory cannot be created"))?;
+        }
+        Err(_) => return Err(support_error("support source directory is unavailable")),
+    }
+    set_private_support_directory_permissions(&path)
+        .map_err(|_| support_error("support source directory permissions failed"))
+}
+
+fn publish_private_support_source(path: &Path, contents: &[u8]) -> Result<(), AppError> {
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+    let parent = path
+        .parent()
+        .ok_or_else(|| support_error("support source parent is unavailable"))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| support_error("support source name is invalid"))?;
+    let temporary = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let result = (|| {
+        let mut file = options
+            .open(&temporary)
+            .map_err(|_| support_error("support source cannot be staged"))?;
+        std::io::Write::write_all(&mut file, contents)
+            .map_err(|_| support_error("support source cannot be written"))?;
+        file.sync_all()
+            .map_err(|_| support_error("support source cannot be synced"))?;
+        crate::set_private_file_permissions(&temporary)
+            .map_err(|_| support_error("support source permissions failed"))?;
+        fs::rename(&temporary, path)
+            .map_err(|_| support_error("support source cannot be published"))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(unix)]
+fn set_private_support_directory_permissions(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn set_private_support_directory_permissions(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 impl SupportBundleCollector for FileSupportBundleCollector {
@@ -301,6 +422,79 @@ mod tests {
             artifacts: vec![artifact],
             bounds: SupportBundleBounds::SAFE_DEFAULT,
         }
+    }
+
+    #[test]
+    fn publishes_only_allowlisted_sources_with_private_permissions() {
+        let root = root("publish-sources");
+        let collector = FileSupportBundleCollector::new_online(&root, root.join("bundle.tar"));
+        collector
+            .publish_sources(&[
+                (
+                    SupportBundleArtifact::VersionManifest,
+                    b"version = \"test\"\n".to_vec(),
+                ),
+                (
+                    SupportBundleArtifact::BoundedProductLog,
+                    b"{\"event\":\"test\"}\n".to_vec(),
+                ),
+            ])
+            .unwrap();
+        assert!(root.join("version.manifest").is_file());
+        assert!(root.join("logs/product.log").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(root.join("logs"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(root.join("version.manifest"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_publishing_rejects_symlinked_subdirectory_before_writing_any_source() {
+        use std::os::unix::fs::symlink;
+        let root = root("source-symlink");
+        let outside = root.join("outside");
+        let support = root.join("support");
+        fs::create_dir(&outside).unwrap();
+        fs::create_dir(&support).unwrap();
+        symlink(&outside, support.join("config")).unwrap();
+        let collector =
+            FileSupportBundleCollector::new_online(&support, support.join("bundle.tar"));
+        let result = collector.publish_sources(&[
+            (
+                SupportBundleArtifact::VersionManifest,
+                b"version = \"test\"\n".to_vec(),
+            ),
+            (
+                SupportBundleArtifact::MaskedConfig,
+                b"routes = 0\n".to_vec(),
+            ),
+        ]);
+        assert!(result.is_err());
+        assert!(!support.join("version.manifest").exists());
+        assert!(!outside.join("masked.toml").exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[derive(Debug)]

@@ -44,7 +44,10 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("python3 -m unittest discover -s tests/release_contract", self.workflow)
         self.assertIn("tests/performance/contract/runner-contract.test.mjs", self.workflow)
         self.assertIn("tests/performance/contract/artifact-audit-contract.test.mjs", self.workflow)
-        self.assertLess(self.workflow.index("Release tooling contracts"), self.workflow.index("Build release binary"))
+        self.assertLess(
+            self.workflow.index("Release tooling contracts"),
+            self.workflow.index("Build x86_64 Linux release binary with baseline CPU flags"),
+        )
 
     def test_reusable_test_container_uses_the_exact_workspace_toolchain(self) -> None:
         dockerfile = (ROOT / "Dockerfile.test").read_text(encoding="utf-8")
@@ -132,6 +135,17 @@ class BuildWorkflowContractTest(unittest.TestCase):
         self.assertIn("Verify Linux archive binary is statically linked", self.workflow)
         self.assertIn("statically linked", self.workflow)
         self.assertIn("static-pie linked", self.workflow)
+
+    def test_x86_64_archive_crypto_is_built_and_run_on_a_pre_avx_cpu(self) -> None:
+        for required in (
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
+            "-C target-cpu=x86-64",
+            "CFLAGS: -march=x86-64 -mtune=generic",
+            "qemu-x86_64 -cpu qemu64",
+            "rustls_certificate_material_validator_returns_leaf_expiry",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.workflow)
 
     def test_ci_actions_use_the_node24_action_runtime(self) -> None:
         workflow_paths = (

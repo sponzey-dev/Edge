@@ -35,10 +35,8 @@ impl SessionStore {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdminAuthenticator {
     password_hash: String,
-    next_session: u64,
     failed_attempts: u32,
     max_failed_attempts: u32,
 }
@@ -47,7 +45,6 @@ impl AdminAuthenticator {
     pub fn new(password_hash: impl Into<String>) -> Self {
         Self {
             password_hash: password_hash.into(),
-            next_session: 1,
             failed_attempts: 0,
             max_failed_attempts: 5,
         }
@@ -76,13 +73,29 @@ impl AdminAuthenticator {
 
         self.failed_attempts = 0;
         let session = Session {
-            session_id: format!("session-{}", self.next_session),
-            csrf_token: format!("csrf-{}", self.next_session),
+            session_id: secure_token()?,
+            csrf_token: secure_token()?,
         };
-        self.next_session += 1;
         sessions.insert(session.clone());
         Ok(session)
     }
+}
+
+fn secure_token() -> Result<String, AppError> {
+    let mut token = [0_u8; 32];
+    getrandom::fill(&mut token).map_err(|_| {
+        AppError::new(
+            ErrorCode::InternalBug,
+            "secure session token generation failed",
+        )
+    })?;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(token.len() * 2);
+    for byte in token {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(encoded)
 }
 
 pub fn require_session(sessions: &SessionStore, session_id: Option<&str>) -> Result<(), AppError> {

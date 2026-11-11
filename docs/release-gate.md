@@ -75,6 +75,8 @@ claim. Record and cross-check all of the following against that candidate:
 - Linux `amd64` archive checksum and SPDX SBOM checksum
 - static-link verification for the supported amd64 archive; it must run on the
   supported clean host without relying on that host's glibc version
+- x86_64 archive build flags fixed to the x86-64 baseline, plus the TLS crypto
+  validation smoke executed under QEMU's pre-AVX `qemu64` CPU model
 - any published arm64 archive checksum, explicitly marked unverified and
   unsupported rather than used as promotion evidence
 - GHCR repository, immutable multi-architecture manifest digest, and OCI
@@ -109,8 +111,11 @@ fixed paths, and no Docker socket or privileged-container requirement.
 ## Support and performance evidence
 
 Record a support-bundle request through `POST /api/v1/support-bundles` or the
-equivalent UI action. Verify the receipt is secret-free and that allowlist,
-byte/log-age bounds, and path/symlink rejection hold.
+equivalent UI action. Verify the receipt is secret-free, all six fixed diagnostic
+members are present in the tar, and the receipt digest matches the raw archive.
+Check the masked-config and aggregate-log contents for excluded identifiers and
+request data, then verify allowlist, byte/log-age bounds, private permissions,
+failure preservation, and path/symlink rejection.
 
 The Edge performance Compose boundary defaults to source-build characterization. Its
 smoke may run with:
@@ -122,8 +127,12 @@ node tests/performance/bin/audit.mjs artifacts/performance/<run-id>
 
 Run a real profile only from a clean Git worktree. The runner rejects source
 changes before artifact, PKI, image-build, or Compose-service side effects, so
-the recorded commit/tree identity describes the measured source. Published-candidate baseline and
-soak require the explicit digest-pinned image mode in [testing.md](testing.md#release-performance-test-environment).
+the recorded commit/tree identity describes the measured source. The functional
+smoke may characterize a developer Docker environment; it is not candidate
+performance evidence. Published-candidate baseline and soak run on the Linux
+host configured through `.env` `TEST_SERVER_` values, from a clean checkout,
+and require the explicit digest-pinned image mode in
+[testing.md](testing.md#release-performance-test-environment).
 The runner checks labels before service changes and the running container image before load.
 
 The C8 release performance contract uses audited three-run `baseline` artifacts.

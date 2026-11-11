@@ -733,6 +733,10 @@ mod tests {
         AuditLedgerReader, RevisionRecord, StoredCertificate,
     };
 
+    fn new_test_authenticator(password_hash: &str) -> AdminAuthenticator {
+        AdminAuthenticator::new(password_hash)
+    }
+
     struct FakeAuditReader {
         called: Cell<u32>,
     }
@@ -1070,7 +1074,7 @@ mod tests {
 
     #[test]
     fn login_success_creates_session_and_csrf() {
-        let mut auth = AdminAuthenticator::new("hash");
+        let mut auth = new_test_authenticator("hash");
         let mut sessions = SessionStore::default();
 
         let session = auth.login("hash", &mut sessions).unwrap();
@@ -1080,8 +1084,26 @@ mod tests {
     }
 
     #[test]
+    fn a_new_authenticator_does_not_reissue_a_previous_session_or_csrf_token() {
+        let mut previous_auth = new_test_authenticator("hash");
+        let mut previous_sessions = SessionStore::default();
+        let previous = previous_auth.login("hash", &mut previous_sessions).unwrap();
+
+        let mut restarted_auth = new_test_authenticator("hash");
+        let mut restarted_sessions = SessionStore::default();
+        let current = restarted_auth
+            .login("hash", &mut restarted_sessions)
+            .unwrap();
+
+        assert_ne!(current.session_id, previous.session_id);
+        assert_ne!(current.csrf_token, previous.csrf_token);
+        assert!(previous_sessions.verify(&previous.session_id));
+        assert!(!restarted_sessions.verify(&previous.session_id));
+    }
+
+    #[test]
     fn login_failure_is_rejected() {
-        let mut auth = AdminAuthenticator::new("hash");
+        let mut auth = new_test_authenticator("hash");
         let mut sessions = SessionStore::default();
 
         let error = auth.login("wrong", &mut sessions).unwrap_err();
@@ -3244,7 +3266,9 @@ mod tests {
         );
 
         assert_eq!(login_response.status_code, 200);
-        assert!(login_response.body.contains("\"csrf_token\":\"csrf-1\""));
+        let csrf_token = json_string_field(&login_response.body, "csrf_token").unwrap();
+        assert_eq!(csrf_token.len(), 64);
+        assert!(csrf_token.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -3304,7 +3328,7 @@ mod tests {
     #[test]
     fn http_login_success_emits_secure_cookie_and_csrf_json() {
         let mut sessions = SessionStore::default();
-        let mut authenticator = Some(AdminAuthenticator::new("hash"));
+        let mut authenticator = Some(new_test_authenticator("hash"));
         let mut secrets = MemorySecretStore::default();
         let snapshot = snapshot();
         let request = AdminHttpRequest::new(AdminHttpMethod::Post, "/api/v1/login", "req-login")
@@ -3321,18 +3345,31 @@ mod tests {
         );
 
         assert_eq!(response.status_code, 200);
-        assert!(response.body.contains("\"csrf_token\":\"csrf-1\""));
-        assert!(response.headers.contains(&(
-            "set-cookie".to_string(),
-            "sponzey_session=session-1; Path=/; HttpOnly; Secure; SameSite=Strict".to_string()
-        )));
-        assert!(sessions.verify("session-1"));
+        let csrf_token = json_string_field(&response.body, "csrf_token").unwrap();
+        let cookie = response
+            .headers
+            .iter()
+            .find(|(name, _)| name == "set-cookie")
+            .map(|(_, value)| value)
+            .unwrap();
+        let session_id = cookie
+            .strip_prefix("sponzey_session=")
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        assert!(cookie.contains("HttpOnly; Secure; SameSite=Strict"));
+        assert_eq!(csrf_token.len(), 64);
+        assert!(csrf_token.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(session_id.len(), 64);
+        assert!(session_id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(sessions.verify(session_id));
     }
 
     #[test]
     fn http_login_failure_returns_stable_auth_error() {
         let mut sessions = SessionStore::default();
-        let mut authenticator = Some(AdminAuthenticator::new("hash"));
+        let mut authenticator = Some(new_test_authenticator("hash"));
         let mut secrets = MemorySecretStore::default();
         let snapshot = snapshot();
         let request = AdminHttpRequest::new(AdminHttpMethod::Post, "/api/v1/login", "req-login")
@@ -3358,7 +3395,7 @@ mod tests {
     #[test]
     fn http_login_lockout_rejects_after_repeated_failures() {
         let mut sessions = SessionStore::default();
-        let mut authenticator = Some(AdminAuthenticator::new("hash"));
+        let mut authenticator = Some(new_test_authenticator("hash"));
         let mut secrets = MemorySecretStore::default();
         let snapshot = snapshot();
         let request = AdminHttpRequest::new(AdminHttpMethod::Post, "/api/v1/login", "req-login")
@@ -3399,7 +3436,7 @@ mod tests {
             session_id: "session-1".to_string(),
             csrf_token: "csrf-1".to_string(),
         });
-        let mut authenticator = Some(AdminAuthenticator::new("hash"));
+        let mut authenticator = Some(new_test_authenticator("hash"));
         let mut secrets = MemorySecretStore::default();
         let snapshot = snapshot();
         let missing_csrf =

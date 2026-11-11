@@ -129,8 +129,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
-      - name: Build release binary
-        if: matrix.linux_musl
+      - name: Test x86_64 TLS crypto on a pre-AVX CPU
+        if: matrix.rust_target == 'x86_64-unknown-linux-musl'
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: /tmp/sponzey-qemu-x86_64-noavx
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: -C target-cpu=x86-64
+          CFLAGS: -march=x86-64 -mtune=generic
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+          cat > /tmp/sponzey-qemu-x86_64-noavx <<'EOF'
+          #!/bin/sh
+          exec qemu-x86_64 -cpu qemu64 "$@"
+          EOF
+          chmod 0755 /tmp/sponzey-qemu-x86_64-noavx
+          cargo test --target x86_64-unknown-linux-musl --locked -p edge-adapters rustls_certificate_material_validator_returns_leaf_expiry -- --test-threads=1
+
+      - name: Build x86_64 Linux release binary with baseline CPU flags
+        if: matrix.rust_target == 'x86_64-unknown-linux-musl'
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: -C target-cpu=x86-64
+          CFLAGS: -march=x86-64 -mtune=generic
+        run: cargo build --release --locked -p edge-proxy --target x86_64-unknown-linux-musl
+
+      - name: Build other static Linux release binary
+        if: matrix.linux_musl && matrix.rust_target != 'x86_64-unknown-linux-musl'
         run: cargo build --release --locked -p edge-proxy --target ${{ matrix.rust_target }}
 
       - name: Build native release binary

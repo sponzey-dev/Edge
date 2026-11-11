@@ -248,6 +248,7 @@ PY
   stage-artifact)
     [ "$#" -eq 2 ] && [ "$1" = "--image-digest" ] || fail "invalid stage arguments"
     require_valid_digest "$2"
+    image_digest=$NORMALIZED_DIGEST
     [ -f "$STAGED_ENV_FILE" ] && [ ! -L "$STAGED_ENV_FILE" ] || fail "staged runtime manifest is missing or unsafe"
     owner=$(stat -c %u "$STAGED_ENV_FILE" 2>/dev/null || stat -f %u "$STAGED_ENV_FILE") || fail "cannot inspect staged runtime manifest owner"
     [ "$owner" = "$ROOT_UID" ] || fail "staged runtime manifest is not root owned"
@@ -256,7 +257,7 @@ PY
     require_valid_digest "$staged_config_digest"
     staged_config_digest=$NORMALIZED_DIGEST
     expected_manifest=$(printf 'SPONZEY_EDGE_TAG=%s\nSPONZEY_EDGE_DIGEST=%s\nSPONZEY_EDGE_IMAGE_CONFIG_DIGEST=%s\nSPONZEY_EDGE_LOCAL_IMAGE=ghcr.io/sponzey-lab/sponzey-edge:%s\nSPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:%s@sha256:%s' \
-      "$staged_tag" "${NORMALIZED_DIGEST#sha256:}" "$staged_config_digest" "$staged_tag" "$staged_tag" "${NORMALIZED_DIGEST#sha256:}")
+      "$staged_tag" "${image_digest#sha256:}" "$staged_config_digest" "$staged_tag" "$staged_tag" "${image_digest#sha256:}")
     [ "$(cat "$STAGED_ENV_FILE")" = "$expected_manifest" ] || fail "staged runtime manifest digest mismatch"
     ;;
   switch-staged)

@@ -478,6 +478,51 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
                 + "SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:" + "a" * 64 + "\n",
             )
 
+    def test_stage_artifact_preserves_distinct_oci_and_config_digests(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            staged = temporary / "runtime.env.stage"
+            image_digest = "a" * 64
+            config_digest = "b" * 64
+            self.write_runtime_manifest(staged, "v1.2.3", image_digest, config_digest)
+            helper = temporary / "compose-upgrade-helper"
+            helper.write_text(
+                self.helper.read_text(encoding="utf-8")
+                .replace("ROOT_UID=0", f"ROOT_UID={os.getuid()}")
+                .replace(
+                    "STAGED_ENV_FILE=/etc/sponzey-edge/compose/runtime.env.stage",
+                    f"STAGED_ENV_FILE='{staged}'",
+                ),
+                encoding="utf-8",
+            )
+            helper.chmod(0o755)
+            prefix = [
+                str(helper), "--project-directory", "/etc/sponzey-edge/compose",
+                "--file", "/etc/sponzey-edge/compose/docker-compose.yml",
+                "stage-artifact", "--image-digest", "sha256:" + image_digest,
+            ]
+
+            valid = subprocess.run(prefix, capture_output=True, text=True, cwd=ROOT)
+
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            self.assertEqual(
+                staged.read_text(encoding="utf-8"),
+                "SPONZEY_EDGE_TAG=v1.2.3\n"
+                + "SPONZEY_EDGE_DIGEST=" + image_digest + "\n"
+                + "SPONZEY_EDGE_IMAGE_CONFIG_DIGEST=sha256:" + config_digest + "\n"
+                + "SPONZEY_EDGE_LOCAL_IMAGE=ghcr.io/sponzey-lab/sponzey-edge:v1.2.3\n"
+                + "SPONZEY_EDGE_IMAGE_REFERENCE=ghcr.io/sponzey-lab/sponzey-edge:v1.2.3@sha256:" + image_digest + "\n",
+            )
+
+            staged.write_text(
+                staged.read_text(encoding="utf-8").replace(image_digest, "c" * 64),
+                encoding="utf-8",
+            )
+            invalid = subprocess.run(prefix, capture_output=True, text=True, cwd=ROOT)
+
+            self.assertEqual(invalid.returncode, 2)
+            self.assertIn("staged runtime manifest digest mismatch", invalid.stderr)
+
     def test_preflight_rejects_extra_arguments_before_invoking_docker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)

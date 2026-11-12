@@ -22,6 +22,10 @@ class G05AcceptanceIndexContractTest(unittest.TestCase):
     def write_valid_index(self, root: Path) -> Path:
         criteria = []
         for criterion_id in CRITERIA:
+            original_relative = Path("originals") / f"{criterion_id.lower()}.txt"
+            original_file = root / original_relative
+            original_file.parent.mkdir(parents=True, exist_ok=True)
+            original_file.write_bytes(f"original bytes for {criterion_id}\n".encode("utf-8"))
             record = {
                 "schema_version": 1,
                 "criterion_id": criterion_id,
@@ -29,6 +33,10 @@ class G05AcceptanceIndexContractTest(unittest.TestCase):
                 "expected": f"{criterion_id} evidence matches the candidate",
                 "actual": f"{criterion_id} observation verified",
                 "decision": "PASS",
+                "originals": [{
+                    "path": original_relative.as_posix(),
+                    "sha256": hashlib.sha256(original_file.read_bytes()).hexdigest(),
+                }],
             }
             relative = Path("evidence") / f"{criterion_id.lower()}.json"
             evidence_file = root / relative
@@ -92,6 +100,45 @@ class G05AcceptanceIndexContractTest(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("G05_INDEX_EVIDENCE_DIGEST_MISMATCH", result.stderr)
+
+    def test_rejects_tampered_original_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            index = self.write_valid_index(root)
+            original = root / "originals" / "g05-a03.txt"
+            original.write_bytes(b"changed original bytes\n")
+
+            result = self.run_inspector(root, index)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("G05_INDEX_ORIGINAL_DIGEST_MISMATCH", result.stderr)
+
+    def test_rejects_missing_original_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            index = self.write_valid_index(root)
+            (root / "originals" / "g05-a05.txt").unlink()
+
+            result = self.run_inspector(root, index)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("G05_INDEX_ORIGINAL_MISSING", result.stderr)
+
+    def test_rejects_symlinked_original_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            index = self.write_valid_index(root)
+            original = root / "originals" / "g05-a08.txt"
+            outside = root.parent / f"{root.name}-original-outside.txt"
+            outside.write_bytes(original.read_bytes())
+            original.unlink()
+            original.symlink_to(outside)
+
+            result = self.run_inspector(root, index)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("G05_INDEX_EVIDENCE_UNSAFE_PATH", result.stderr)
+            outside.unlink()
 
     def test_rejects_evidence_bound_to_a_different_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

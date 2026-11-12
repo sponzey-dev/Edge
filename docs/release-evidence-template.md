@@ -287,9 +287,13 @@ lowercase `commit`, `oci_index_digest`, and `linux_amd64_config_digest`. It
 contains each of `G05-A01` through `G05-A08` exactly once. Each criterion is
 `PASS` and references exactly one relative observation JSON path and SHA-256.
 Each observation contains exactly `schema_version`, `criterion_id`, the same
-candidate, non-empty `expected` and `actual` observations, and `decision: PASS`.
-Keep the source command transcript and original operational evidence under the
-same evidence root, with their own documented references where applicable.
+candidate, non-empty `expected` and `actual` observations, `decision: PASS`,
+and a non-empty `originals` list. Each `originals` entry binds a relative
+original source/output path to its SHA-256. The inspector hashes each referenced
+original (up to 1 GiB per file) without printing its contents, and refuses missing,
+changed, symlinked, or out-of-root originals. The observation digest then binds
+these original references to the candidate decision. Keep private raw material
+out of Git; the evidence root may be a protected local/host directory.
 
 Run the structural and digest inspection with:
 
@@ -300,9 +304,9 @@ python3 tools/release/validate_g05_acceptance_index.py \
 ```
 
 The inspector rejects missing or duplicate criteria, candidate mismatches,
-incorrect digests, symlinks and paths outside the evidence root, duplicate JSON
-keys, unexpected fields, and oversized records. A successful result verifies
-index structure, file integrity, and recorded identity only. It does not
+incorrect observation/original digests, symlinks and paths outside the evidence
+root, duplicate JSON keys, unexpected fields, and oversized records. A successful
+result verifies index structure, file integrity, and recorded identity only. It does not
 independently interpret the referenced operations or prove how observations
 were collected. Review each `expected`/`actual` pair against its original
 evidence before recording `PASS`; omit secrets, private keys, credentials,

@@ -32,9 +32,12 @@ RECORD_FIELDS = {
     "expected",
     "actual",
     "decision",
+    "originals",
 }
+ORIGINAL_FIELDS = {"path", "sha256"}
 MAX_INDEX_BYTES = 1024 * 1024
 MAX_RECORD_BYTES = 64 * 1024
+MAX_ORIGINAL_BYTES = 1024 * 1024 * 1024
 MAX_OBSERVATION_TEXT = 4096
 
 
@@ -78,8 +81,8 @@ def safe_relative_path(value: Any) -> tuple[str, ...]:
     return path.parts
 
 
-def read_beneath(root: Path, parts: tuple[str, ...], max_bytes: int) -> bytes:
-    """Open each component relative to an anchored root fd, refusing symlinks."""
+def open_beneath(root: Path, parts: tuple[str, ...], missing_code: str) -> int:
+    """Open a regular-file candidate relative to root without following links."""
     if not parts:
         raise IndexErrorCode("G05_INDEX_EVIDENCE_UNSAFE_PATH", "file path is empty")
 
@@ -96,34 +99,65 @@ def read_beneath(root: Path, parts: tuple[str, ...], max_bytes: int) -> bytes:
             if current_fd != root_fd:
                 os.close(current_fd)
             current_fd = next_fd
-        file_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=current_fd)
-        try:
-            file_stat = os.fstat(file_fd)
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise IndexErrorCode("G05_INDEX_EVIDENCE_UNSAFE_PATH", "evidence references must be regular files")
-            if file_stat.st_size > max_bytes:
-                raise IndexErrorCode("G05_INDEX_FILE_TOO_LARGE", "an index or observation exceeds its size bound")
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                chunk = os.read(file_fd, min(65536, max_bytes + 1 - total))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-                if total > max_bytes:
-                    raise IndexErrorCode("G05_INDEX_FILE_TOO_LARGE", "an index or observation exceeds its size bound")
-            return b"".join(chunks)
-        finally:
-            os.close(file_fd)
+        return os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=current_fd)
     except OSError as error:
         if error.errno == errno.ELOOP:
             raise IndexErrorCode("G05_INDEX_EVIDENCE_UNSAFE_PATH", "symlink paths are not accepted") from error
+        if error.errno == errno.ENOENT:
+            raise IndexErrorCode(missing_code, "a referenced file is missing") from error
         raise IndexErrorCode("G05_INDEX_EVIDENCE_UNSAFE_PATH", "a referenced file is missing or cannot be opened safely") from error
     finally:
         if current_fd != root_fd:
             os.close(current_fd)
         os.close(root_fd)
+
+
+def read_beneath(root: Path, parts: tuple[str, ...], max_bytes: int) -> bytes:
+    file_fd = open_beneath(root, parts, "G05_INDEX_EVIDENCE_MISSING")
+    try:
+        file_stat = os.fstat(file_fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise IndexErrorCode("G05_INDEX_EVIDENCE_UNSAFE_PATH", "evidence references must be regular files")
+        if file_stat.st_size > max_bytes:
+            raise IndexErrorCode("G05_INDEX_FILE_TOO_LARGE", "an index or observation exceeds its size bound")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(file_fd, min(65536, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise IndexErrorCode("G05_INDEX_FILE_TOO_LARGE", "an index or observation exceeds its size bound")
+        return b"".join(chunks)
+    finally:
+        os.close(file_fd)
+
+
+def digest_beneath(root: Path, parts: tuple[str, ...], max_bytes: int) -> str:
+    file_fd = open_beneath(root, parts, "G05_INDEX_ORIGINAL_MISSING")
+    try:
+        file_stat = os.fstat(file_fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise IndexErrorCode("G05_INDEX_EVIDENCE_UNSAFE_PATH", "original evidence references must be regular files")
+        if file_stat.st_size > max_bytes:
+            raise IndexErrorCode("G05_INDEX_ORIGINAL_TOO_LARGE", "an original evidence file exceeds its size bound")
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(file_fd, 1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise IndexErrorCode("G05_INDEX_ORIGINAL_TOO_LARGE", "an original evidence file exceeds its size bound")
+            digest.update(chunk)
+        if total != file_stat.st_size:
+            raise IndexErrorCode("G05_INDEX_ORIGINAL_CHANGED", "an original evidence file changed during inspection")
+        return digest.hexdigest()
+    finally:
+        os.close(file_fd)
 
 
 def validate_candidate(value: Any) -> dict[str, str]:
@@ -166,6 +200,7 @@ def validate_index(root: Path, index_parts: tuple[str, ...]) -> dict[str, Any]:
         raise IndexErrorCode("G05_INDEX_CRITERIA_INCOMPLETE", "criteria must contain each required G05 acceptance criterion exactly once")
 
     seen_evidence: set[str] = set()
+    original_count = 0
     for criterion_id in CRITERIA:
         criterion = by_id[criterion_id]
         if criterion["status"] != "PASS":
@@ -201,12 +236,30 @@ def validate_index(root: Path, index_parts: tuple[str, ...]) -> dict[str, Any]:
                 raise IndexErrorCode("G05_INDEX_EVIDENCE_SHAPE_INVALID", f"{criterion_id} {field} observation is missing or out of bounds")
         if record["decision"] != "PASS":
             raise IndexErrorCode("G05_INDEX_CRITERION_NOT_PASS", f"{criterion_id} observation decision is not PASS")
+        originals = record["originals"]
+        if not isinstance(originals, list) or not originals:
+            raise IndexErrorCode("G05_INDEX_ORIGINAL_MISSING", f"{criterion_id} must reference original evidence")
+        for original in originals:
+            original_reference = require_object(
+                original,
+                ORIGINAL_FIELDS,
+                "G05_INDEX_EVIDENCE_SHAPE_INVALID",
+                "original evidence reference",
+            )
+            original_parts = safe_relative_path(original_reference["path"])
+            original_digest = original_reference["sha256"]
+            if not isinstance(original_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", original_digest):
+                raise IndexErrorCode("G05_INDEX_ORIGINAL_DIGEST_INVALID", "original SHA-256 must be lowercase hex")
+            if digest_beneath(root, original_parts, MAX_ORIGINAL_BYTES) != original_digest:
+                raise IndexErrorCode("G05_INDEX_ORIGINAL_DIGEST_MISMATCH", f"{criterion_id} original evidence digest does not match")
+            original_count += 1
 
     return {
         "goal": "G05",
         "candidate": candidate,
         "criteria_passed": len(CRITERIA),
         "evidence_files_verified": len(seen_evidence),
+        "original_files_verified": original_count,
         "index_digest": hashlib.sha256(index_data).hexdigest(),
         "index_valid": True,
     }

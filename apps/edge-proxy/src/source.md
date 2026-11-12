@@ -5,7 +5,7 @@ It owns process and HTTP-server boundaries but not routing or policy decisions.
 
 | Path | Responsibility | Boundary / Side effects |
 | --- | --- | --- |
-| `main.rs` | Process bootstrap, backup/restore/audit maintenance CLI dispatch, operational probe CLI, and Unix SIGTERM watcher. | Reads environment at bootstrap only; sends acknowledged Core commands outside signal context and emits secret-free result JSON. |
+| `main.rs` | Process bootstrap, backup/restore/audit maintenance CLI dispatch, operational probe CLI, mirrored active-config snapshot exposure, and Unix SIGTERM watcher. | Reads environment at bootstrap only; provides the immutable active snapshot to lifecycle planning and sends acknowledged Core commands outside signal context; emits secret-free result JSON. |
 | `process_mode.rs` | Typed maintenance and operational-probe command parser. | Parses arguments only; requires explicit deployment/identity/artifact/passphrase-file/recovery inputs for maintenance operations and never reads or exposes secret values. |
 | `upgrade_lifecycle.rs` | Offline upgrade and recovery maintenance execution. | Selects only the explicit systemd or Compose journaled helper boundary and renders stable secret-free result JSON; does not parse arguments, read environment values, or start the proxy runtime. |
 | `startup_logging.rs` | Secret-free bootstrap audit, process, config-resolution, and upstream-TLS startup log projection. | Renders supplied facts only; does not alter startup ordering, read environment state, prepare TLS, or enable certificate automation. |

@@ -763,6 +763,13 @@ pub trait SecretStore {
 
 pub trait CoreCommandClient {
     fn send(&mut self, command: CoreCommand) -> CommandAck;
+
+    /// Returns the immutable snapshot currently known to be active at the
+    /// runtime boundary. `None` means this adapter cannot expose an active
+    /// snapshot; callers may fall back to the persisted current revision.
+    fn active_config_snapshot(&self) -> Result<Option<ConfigSnapshot>, AppError> {
+        Ok(None)
+    }
 }
 
 pub trait Http01ChallengeResponder: Send + Sync {

@@ -62,8 +62,11 @@ where
         let revision_id = snapshot.revision_id.clone();
         let record = revision_record_for_snapshot(snapshot.clone(), "apply");
         let current = self.revisions.current()?;
-        let plan =
-            plan_apply_with_current(current.as_ref().map(|record| &record.snapshot), snapshot);
+        let active_snapshot = core.active_config_snapshot()?;
+        let planning_snapshot = active_snapshot
+            .as_ref()
+            .or_else(|| current.as_ref().map(|record| &record.snapshot));
+        let plan = plan_apply_with_current(planning_snapshot, snapshot);
         self.revisions.save_revision(record)?;
         if let Err(error) = send_apply_plan(core, &plan) {
             self.audit.record(AuditEvent {
@@ -122,10 +125,11 @@ where
             .into_result()
             .map_err(|errors| validation_errors_to_app_error(&errors))?;
         let current = self.revisions.current()?;
-        let plan = plan_apply_with_current(
-            current.as_ref().map(|record| &record.snapshot),
-            record.snapshot,
-        );
+        let active_snapshot = core.active_config_snapshot()?;
+        let planning_snapshot = active_snapshot
+            .as_ref()
+            .or_else(|| current.as_ref().map(|record| &record.snapshot));
+        let plan = plan_apply_with_current(planning_snapshot, record.snapshot);
         if let Err(error) = send_apply_plan(core, &plan) {
             self.audit.record(AuditEvent {
                 event: "config.rollback.failure".to_string(),

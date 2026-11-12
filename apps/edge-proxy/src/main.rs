@@ -948,6 +948,18 @@ impl<C> CoreCommandClient for MirroredSnapshotCommandClient<C>
 where
     C: CoreCommandClient + Clone + Send + 'static,
 {
+    fn active_config_snapshot(&self) -> Result<Option<ConfigSnapshot>, AppError> {
+        self.snapshot
+            .read()
+            .map(|snapshot| Some(snapshot.clone()))
+            .map_err(|_| {
+                AppError::new(
+                    ErrorCode::RuntimeCommandRejected,
+                    "config snapshot lock poisoned",
+                )
+            })
+    }
+
     fn send(&mut self, command: CoreCommand) -> CommandAck {
         let current_snapshot = match self.snapshot.read() {
             Ok(snapshot) => snapshot.clone(),
@@ -3611,6 +3623,22 @@ mod tests {
             vec![CertificateRef::new("cert-app")]
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mirrored_command_client_reports_active_snapshot_to_config_lifecycle() {
+        let active = parse_mvp_config(
+            include_str!("../../../examples/minimal.toml"),
+            ConfigRevisionId::new("active-http"),
+        )
+        .unwrap()
+        .snapshot;
+        let client = MirroredSnapshotCommandClient::new(
+            RecordingCoreCommandClient::default(),
+            Arc::new(RwLock::new(active.clone())),
+        );
+
+        assert_eq!(client.active_config_snapshot().unwrap(), Some(active));
     }
 
     #[test]

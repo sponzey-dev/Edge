@@ -4,7 +4,7 @@ This crate defines dependency-inverted contracts for adapters and application/ru
 
 | Path | Responsibility | Boundary / side effects |
 | --- | --- | --- |
-| `lib.rs` | Repository, command, metrics, runtime status, support-bundle, and external-service traits. | Contains only typed contracts; implementations live in adapters or process wiring. |
+| `lib.rs` | Repository, command, metrics, runtime status, support-bundle, and external-service traits. | Contains only typed contracts; `CoreCommandClient` can expose the active immutable config snapshot separately from persisted desired revisions; implementations live in adapters or process wiring. |
 
 Operational readiness uses `OperationalRuntimeStatusPublisher` and
 `OperationalRuntimeStatusReader`: Core publishes listener-registration facts once,

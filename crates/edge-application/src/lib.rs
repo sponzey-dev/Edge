@@ -315,22 +315,30 @@ mod tests {
     struct FakeCoreCommandClient {
         commands: Vec<CoreCommand>,
         reject_after: Option<usize>,
+        active_snapshot: Option<ConfigSnapshot>,
     }
 
     impl CoreCommandClient for FakeCoreCommandClient {
         fn send(&mut self, command: CoreCommand) -> CommandAck {
-            self.commands.push(command);
-            if self
+            let reject = self
                 .reject_after
-                .is_some_and(|count| self.commands.len() >= count)
-            {
+                .is_some_and(|count| self.commands.len() + 1 >= count);
+            self.commands.push(command.clone());
+            if reject {
                 CommandAck::rejected(AppError::new(
                     ErrorCode::RuntimeCommandRejected,
                     "command rejected",
                 ))
             } else {
+                if let CoreCommand::ApplyConfigSnapshot { snapshot } = command {
+                    self.active_snapshot = Some(snapshot);
+                }
                 CommandAck::accepted()
             }
+        }
+
+        fn active_config_snapshot(&self) -> Result<Option<ConfigSnapshot>, AppError> {
+            Ok(self.active_snapshot.clone())
         }
     }
 
@@ -1509,7 +1517,57 @@ url = "http://127.0.0.1:3002"
     }
 
     #[test]
-    fn resource_policy_apply_and_pending_rollback_do_not_send_hot_commands() {
+    fn repeated_pending_listener_apply_remains_restart_required() {
+        let mut lifecycle = ConfigLifecycle {
+            revisions: MemoryRevisionRepo::default(),
+            audit: MemoryAudit::default(),
+            validator: ConfigValidator::default(),
+        };
+        let active = valid_snapshot("active-http");
+        let mut client = FakeCoreCommandClient {
+            active_snapshot: Some(active.clone()),
+            ..FakeCoreCommandClient::default()
+        };
+        lifecycle
+            .apply_with_core(active.clone(), &mut client)
+            .unwrap();
+
+        let mut pending = active.clone();
+        pending.revision_id = ConfigRevisionId::new("pending-https");
+        pending.listeners.push(Listener {
+            id: ListenerId::new("https"),
+            bind: "127.0.0.1:18443".to_string(),
+            protocol: ListenerProtocol::Https,
+            client_auth: ClientAuthPolicy::Disabled,
+        });
+        pending.routes[0].certificate_ref = Some(CertificateRef::new("g05-v016-server"));
+        let first = lifecycle
+            .apply_with_core(pending.clone(), &mut client)
+            .unwrap();
+        assert!(first.plan.restart_required);
+        assert_eq!(client.commands.len(), 1);
+
+        pending.revision_id = ConfigRevisionId::new("pending-https-repeat");
+        let repeated = lifecycle.apply_with_core(pending, &mut client).unwrap();
+
+        assert!(repeated.plan.restart_required);
+        assert!(repeated.plan.commands.is_empty());
+        assert_eq!(client.commands.len(), 1);
+        assert_eq!(
+            lifecycle
+                .revisions
+                .current()
+                .unwrap()
+                .unwrap()
+                .revision
+                .id
+                .as_str(),
+            "pending-https-repeat"
+        );
+    }
+
+    #[test]
+    fn resource_policy_rollback_to_active_snapshot_clears_pending_restart() {
         let mut lifecycle = ConfigLifecycle {
             revisions: MemoryRevisionRepo::default(),
             audit: MemoryAudit::default(),
@@ -1543,8 +1601,8 @@ url = "http://127.0.0.1:3002"
         let rollback = lifecycle
             .rollback_with_core(&ConfigRevisionId::new("rev-1"), &mut client)
             .unwrap();
-        assert!(rollback.plan.restart_required);
-        assert_eq!(client.commands.len(), 1);
+        assert!(!rollback.plan.restart_required);
+        assert_eq!(client.commands.len(), 2);
         assert_eq!(
             lifecycle
                 .revisions

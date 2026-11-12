@@ -39,6 +39,12 @@ config, and calls `ConfigLifecycle::apply_with_core`. The bin-bound TCP listener
 now binds this create endpoint to file revisions and the `run_snapshot_http_proxy_mio`
 runtime command channel. A hot apply consists of one atomic `ApplyConfigSnapshot`
 acknowledgement; the lifecycle commits `current` only after that acknowledgement.
+Restart-required classification compares each proposal with the active runtime
+snapshot, not only the latest persisted desired revision. A listener, metrics, or
+resource-policy change therefore remains `pending_restart` on a repeated apply
+until process restart and sends no hot command. Rolling back to settings that
+match the active snapshot can clear the pending state and apply other compatible
+changes atomically.
 `POST /api/v1/config/rollback` is also bound
 through the same lifecycle/runtime command boundary. `GET /api/v1/proxy-hosts`,
 `GET /api/v1/proxy-hosts/{id}`, `PATCH /api/v1/proxy-hosts/{id}`, and

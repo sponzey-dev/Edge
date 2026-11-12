@@ -273,6 +273,42 @@ official_clean_host_evidence_pending:
 unsupported_platforms: macOS, Windows, Linux arm64
 ```
 
+## G05 Acceptance Index (A09)
+
+The G05 acceptance index is a separate, secret-free integrity and candidate
+consistency record for A01 through A08. It is not `promotion.json`, does not
+replace the release evidence above, and does not authorize G07 product
+promotion. Do not combine observations from different tags, commits, OCI index
+digests, or Linux amd64 image config digests.
+
+The index uses schema version 1 and contains exactly `schema_version`, `goal`,
+`candidate`, and `criteria`. The candidate contains the exact `tag`, full
+lowercase `commit`, `oci_index_digest`, and `linux_amd64_config_digest`. It
+contains each of `G05-A01` through `G05-A08` exactly once. Each criterion is
+`PASS` and references exactly one relative observation JSON path and SHA-256.
+Each observation contains exactly `schema_version`, `criterion_id`, the same
+candidate, non-empty `expected` and `actual` observations, and `decision: PASS`.
+Keep the source command transcript and original operational evidence under the
+same evidence root, with their own documented references where applicable.
+
+Run the structural and digest inspection with:
+
+```bash
+python3 tools/release/validate_g05_acceptance_index.py \
+  --evidence-root <evidence-directory> \
+  --index g05-acceptance-index.json
+```
+
+The inspector rejects missing or duplicate criteria, candidate mismatches,
+incorrect digests, symlinks and paths outside the evidence root, duplicate JSON
+keys, unexpected fields, and oversized records. A successful result verifies
+index structure, file integrity, and recorded identity only. It does not
+independently interpret the referenced operations or prove how observations
+were collected. Review each `expected`/`actual` pair against its original
+evidence before recording `PASS`; omit secrets, private keys, credentials,
+cookies, and raw sensitive logs. A complete A01–A08 index is still only the G05
+acceptance input and cannot enable product promotion before G07.
+
 ## Review Sign-Off
 
 ```text

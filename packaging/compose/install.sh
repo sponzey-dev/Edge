@@ -45,7 +45,7 @@ PY
 image_platform=$(/usr/bin/docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image_reference") || { echo "cannot inspect pinned Compose image platform" >&2; exit 2; }
 [ "$image_platform" = "linux/amd64" ] || { echo "Compose image must target linux/amd64" >&2; exit 2; }
 image_version=$(/usr/bin/docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image_reference") || { echo "cannot inspect pinned Compose image version" >&2; exit 2; }
-[ "$image_version" = "${2#v}" ] || { echo "pinned Compose image version mismatch" >&2; exit 2; }
+[ "$image_version" = "$2" ] || { echo "pinned Compose image version mismatch" >&2; exit 2; }
 image_revision=$(/usr/bin/docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_reference") || { echo "cannot inspect pinned Compose image revision" >&2; exit 2; }
 [ "${#image_revision}" -eq 40 ] || { echo "pinned Compose image revision is invalid" >&2; exit 2; }
 case "$image_revision" in *[!0123456789abcdef]*|'') echo "pinned Compose image revision is invalid" >&2; exit 2 ;; esac

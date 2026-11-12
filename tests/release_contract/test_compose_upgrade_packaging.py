@@ -324,6 +324,18 @@ class ComposeUpgradePackagingContractTest(unittest.TestCase):
         self.assertIn('--env-file "$RUNTIME_ENV_FILE"', helper)
         self.assertIn("runtime.env", installer)
 
+    def test_first_install_matches_published_version_label_to_exact_release_tag(self) -> None:
+        installer = self.install.read_text(encoding="utf-8")
+        self.assertIn(
+            '[ "$image_version" = "$2" ]',
+            installer,
+            "the published OCI version label is the exact Git release tag, including v",
+        )
+        self.assertIn(
+            "org.opencontainers.image.version=${{ github.ref_name }}",
+            self.workflow,
+        )
+
     def test_compose_uses_admitted_local_tag_and_preserves_immutable_provenance(self) -> None:
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
         helper = self.helper.read_text(encoding="utf-8")

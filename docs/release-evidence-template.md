@@ -184,6 +184,12 @@ it does not replace production-image or clean-host evidence.
 Use only a verified published image tag and its immutable digest. Do not replace
 this with a local build, dummy image, or unverified tag.
 
+Before installation, verify that the image's
+`org.opencontainers.image.version` label exactly equals the release tag,
+including its `v` prefix, and that `org.opencontainers.image.revision` equals
+the candidate commit. The release workflow labels the image with the exact Git
+tag and commit; record these values in the secret-free candidate observation.
+
 ```text
 host_os_and_architecture:
 docker_version:

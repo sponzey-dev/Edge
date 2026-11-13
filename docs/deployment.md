@@ -133,7 +133,9 @@ operation identity.
 
 For an existing offline target, add `--replace`. The command syncs an owner-only
 sibling transaction journal before moving the old target to rollback. On
-success it verifies the new target and removes rollback and journal state.
+success it verifies the new target and removes rollback plus both temporary and
+authoritative journal state before reporting completion. If temporary journal
+cleanup fails, recovery returns an error and retains the authoritative journal.
 
 If interrupted, do not alter target, stage, rollback, or journal paths. Run:
 

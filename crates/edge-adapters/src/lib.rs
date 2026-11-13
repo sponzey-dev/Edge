@@ -62,8 +62,8 @@ use edge_ports::{
 #[cfg(test)]
 use edge_ports::{
     BackupArchiveReader, BackupArchiveWriter, BackupArtifactSource, RestoreArchiveExtractor,
-    RestorePreflight, RestorePublisher, RestoreReplacePublisher, RestoreTransactionState,
-    RestoreTransactionStore,
+    RestorePreflight, RestorePublisher, RestoreReplacePublisher, RestoreTransaction,
+    RestoreTransactionState, RestoreTransactionStore,
 };
 #[cfg(test)]
 use edge_ports::{SecretRecord, SecretStore};
@@ -2417,6 +2417,65 @@ mod tests {
         assert_eq!(busy.code, ErrorCode::DataDirectoryBusy);
 
         drop(held);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_restore_transaction_delete_removes_orphan_temporary_journal() {
+        let root = temp_root("restore-transaction-delete-temporary");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("data");
+        let mut store = FileRestoreTransactionStore::new(&target).unwrap();
+        let transaction = RestoreTransaction {
+            operation_id: "operation-1".to_string(),
+            archive_id: "archive-1".to_string(),
+            target_identity: "data".to_string(),
+            stage_identity: ".data.restore-stage".to_string(),
+            rollback_identity: ".data.restore-rollback".to_string(),
+            state: RestoreTransactionState::StagePublished,
+        };
+        store.persist(&transaction).unwrap();
+
+        let journal = root.join(".data.restore-journal");
+        let temporary = root.join(".data.restore-journal.tmp");
+        fs::copy(&journal, &temporary).unwrap();
+
+        store.delete("operation-1").unwrap();
+
+        assert!(!journal.exists());
+        assert!(!temporary.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_restore_transaction_delete_keeps_primary_journal_when_temp_cleanup_fails() {
+        let root = temp_root("restore-transaction-delete-temp-failure");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("data");
+        let mut store = FileRestoreTransactionStore::new(&target).unwrap();
+        let transaction = RestoreTransaction {
+            operation_id: "operation-1".to_string(),
+            archive_id: "archive-1".to_string(),
+            target_identity: "data".to_string(),
+            stage_identity: ".data.restore-stage".to_string(),
+            rollback_identity: ".data.restore-rollback".to_string(),
+            state: RestoreTransactionState::StagePublished,
+        };
+        store.persist(&transaction).unwrap();
+
+        let journal = root.join(".data.restore-journal");
+        let temporary = root.join(".data.restore-journal.tmp");
+        fs::create_dir(&temporary).unwrap();
+
+        let error = store.delete("operation-1").unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::RestoreCommitFailed);
+        assert!(journal.is_file());
+        fs::remove_dir_all(&temporary).unwrap();
+        store.delete("operation-1").unwrap();
+        assert!(!journal.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -37,7 +37,10 @@ drain, metrics, and in-flight connections are not backup artifacts.
   target. The operation reports an audit error as committed-but-audit-degraded;
   replace recovery keeps its transaction journal until provenance succeeds.
 - Existing-target replace uses an owner-only durable journal and sibling
-  rollback directory. Never remove those paths manually after an interruption.
+  rollback directory. Terminal cleanup removes the write-temporary journal before
+  the authoritative journal; if temporary cleanup fails, the authoritative journal
+  remains and recovery reports an error. Never remove those paths manually after
+  an interruption.
 
 The command syntax and replace/recovery examples are in `docs/deployment.md`.
 

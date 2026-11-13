@@ -467,11 +467,18 @@ impl RestoreTransactionStore for FileRestoreTransactionStore {
         Ok(Some(tx))
     }
     fn delete(&mut self, _: &str) -> Result<(), AppError> {
-        match fs::remove_file(&self.journal) {
-            Ok(()) => sync_parent(&self.journal).map_err(|_| restore_commit_failed()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(_) => Err(restore_commit_failed()),
+        let mut removed = false;
+        for path in [&self.temporary, &self.journal] {
+            match fs::remove_file(path) {
+                Ok(()) => removed = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(restore_commit_failed()),
+            }
         }
+        if removed {
+            sync_parent(&self.journal).map_err(|_| restore_commit_failed())?;
+        }
+        Ok(())
     }
 }
 
